@@ -1,0 +1,81 @@
+# Configuration for Ricochet Robots Node Classifier
+# Transformer model for binary subgoal prediction
+
+# Random seed for reproducibility
+seed: 42
+
+# Weights & Biases configuration
+wandb:
+  project: "ricochet-robots-node-classifier"
+  name: null  # Auto-generate name if null
+  save_dir: "./wandb_logs"
+  log_model: true  # Save model checkpoints to wandb
+  log_code: true   # Log code to wandb
+
+# Data configuration
+data:
+  train_path: "data/ricochet_data/dataset.json"
+  val_path: null  # If null, will split from train_path
+  test_path: null
+  board_size: 16
+  batch_size: 32
+  num_workers: 4
+  train_val_split: 0.8  # Fraction for training (rest for validation)
+
+  # Positional encoding configuration
+  positional_encoding: "onehot"  # Options: onehot, sinusoidal, normalized, learned
+  positional_encoding_kwargs: {}  # Additional kwargs for positional encoding
+  # Example for sinusoidal: positional_encoding_kwargs: {encoding_dim: 64}
+  # Example for learned: positional_encoding_kwargs: {embedding_dim: 64}
+
+# Model architecture configuration
+model:
+  # feature_dim is computed automatically: 11 + 2*board_size
+  # For 16x16 board: 11 + 32 = 43
+  d_model: 256          # Transformer embedding dimension
+  nhead: 8              # Number of attention heads
+  num_layers: 6         # Number of transformer encoder layers
+  dim_feedforward: 1024 # Feedforward network dimension
+  dropout: 0.1          # Dropout probability
+  activation: "gelu"    # Activation function (gelu or relu)
+
+# Training configuration
+training:
+  learning_rate: 1.0e-4  # Learning rate
+  weight_decay: 0.01     # Weight decay (L2 regularization)
+  warmup_steps: 1000     # Learning rate warmup steps
+  max_steps: 100000      # Maximum training steps (for LR scheduler)
+  pos_weight: null       # Positive class weight (null = auto-compute from data)
+  log_predictions: true  # Log example predictions to wandb
+  log_every_n_steps: 100 # Log predictions every N steps
+
+# PyTorch Lightning Trainer configuration
+trainer:
+  max_epochs: 100
+  max_steps: -1          # -1 = train for max_epochs
+  accelerator: "auto"    # auto, gpu, cpu, tpu
+  devices: "auto"        # auto, 1, 2, etc.
+  strategy: "auto"       # auto, ddp, deepspeed, etc.
+  precision: "32-true"   # 32-true, 16-mixed, bf16-mixed
+  log_every_n_steps: 50
+  val_check_interval: 1.0  # Validate every epoch (1.0) or every N steps
+  gradient_clip_val: 1.0   # Gradient clipping threshold
+  accumulate_grad_batches: 1  # Gradient accumulation steps
+  deterministic: false   # Deterministic training (slower but reproducible)
+  benchmark: true        # Enable cuDNN benchmark for faster training
+
+# Checkpoint configuration
+checkpoint:
+  dirpath: "./checkpoints"
+  filename: "node_classifier-{epoch:02d}-{val/exact_match:.4f}"
+  monitor: "val/exact_match"  # Metric to monitor (MAIN METRIC: per-example accuracy)
+  mode: "max"            # max or min
+  save_top_k: 3          # Save top K checkpoints
+  save_last: true        # Save last checkpoint
+
+# Early stopping configuration
+early_stopping:
+  enabled: true
+  monitor: "val/exact_match"  # Metric to monitor (MAIN METRIC: per-example accuracy)
+  patience: 10           # Number of epochs with no improvement
+  mode: "max"            # max or min

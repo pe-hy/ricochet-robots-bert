@@ -1,387 +1,323 @@
-# Clean Framework
+# Ricochet Robots Node Classifier
 
-A streamlined framework for training language models efficiently on various datasets.
+A BERT-like Transformer model for predicting subgoals in Ricochet Robots board states using PyTorch Lightning and Weights & Biases.
 
 ## Overview
 
-Clean Framework provides a structured approach to training language models on custom datasets. The framework handles data preprocessing, tokenization, training, and evaluation in a consistent way, allowing you to focus on designing your experiments rather than boilerplate code.
+This project implements a **Transformer encoder** for binary node classification on Ricochet Robots boards. The model predicts which board positions are subgoals (intermediate waypoints) for solving puzzles.
 
-## Repository setup
-```
-# Clone the repository
-git clone https://github.com/pe-hy/clean_framework.git
-cd clean_framework
+### Key Features
 
-# Create a conda environment
-conda create -n llms python=3.11
+- **BERT-like Architecture**: Bidirectional self-attention (not autoregressive)
+- **Modular Positional Encoding**: Easy to swap between one-hot, sinusoidal, normalized, or learned encodings
+- **Exact Match Metric**: Primary metric that requires ALL nodes to be classified correctly
+- **PyTorch Lightning**: Clean training loop with automatic checkpointing
+- **Weights & Biases Integration**: Full experiment tracking and visualization
 
-# Activate the environment
-# On Windows, macOS, and Linux:
-conda activate llms
+## Quick Start
 
+### 1. Installation
+
+```bash
 # Install dependencies
 pip install -r requirements.txt
+
+# Login to Weights & Biases
+wandb login
 ```
+
+### 2. Verify Setup
+
+```bash
+# Run tests
+python test_model.py
+```
+
+### 3. Train
+
+```bash
+python train_node_classifier.py --config config/node_classifier.yaml
+```
+
+### 4. Monitor
+
+Training logs to Weights & Biases automatically. Monitor:
+- `val/exact_match` - **Main metric** (per-example accuracy)
+- `val/accuracy` - Node-level accuracy
+- `val/f1`, `val/precision`, `val/recall`, `val/auroc`
 
 ## Project Structure
 
 ```
-clean_framework/
+ricochet-robots-bert/
+├── config/
+│   └── node_classifier.yaml      # All configuration (model, training, data)
 │
-├── config/                     # Configuration files
-│   ├── base.yaml               # Main configuration (modify for your project)
-│   └── hf_config.py            # HuggingFace model configuration
+├── data/
+│   ├── mock.py                    # Generate mock training data
+│   └── ricochet_data/
+│       └── dataset.json           # Training dataset (100 examples)
 │
-├── data/                       # Data directory
-│   ├── train.json              # Training data
-│   ├── test.json               # Testing data
-│   └── inference_data/         # Data for inference
+├── model/
+│   ├── node_classifier.py         # Transformer architecture
+│   └── lightning_module.py        # Training loop, metrics, logging
 │
-├── data_generation/            # Scripts for generating data
-│   └── generate_data.py        # Main data generation script
+├── utils/
+│   ├── data_module.py             # Data loading with positional encoding
+│   └── positional_encoding.py    # Modular positional encoding strategies
 │
-├── hpc_scripts/                # Scripts for HPC environments
-│   ├── data_info.sh            # Get data statistics
-│   ├── filter.sh               # Filter data
-│   ├── gen_data.sh             # Generate data
-│   ├── inference.sh            # Run inference
-│   ├── job.sh                  # Training job
-│   └── tokenizer.sh            # Create tokenizer
-│
-├── tokenizer/                  # Tokenizer files
-│
-├── utils/                      # Utility scripts
-│   ├── create_tokenizer.py     # Tokenizer creation
-│   ├── data.py                 # Data loading utilities
-│   ├── evaluator.py            # Evaluation utilities
-│   ├── filter_data.py          # Data filtering
-│   ├── get_data_info.py        # Data statistics
-│   └── inference.py            # Inference utilities
-│
-├── train.py                    # Main training script
-├── requirements.txt            # Package list
-├── .gitignore                  # Git ignore file
-├── LICENSE                     # MIT License
-└── README.md                   # This file
+├── train_node_classifier.py      # Training script
+├── test_model.py                  # Verification tests
+├── test_positional_encodings.py  # Test different encodings
+├── visualize_node_processing.py  # Visualize data flow
+└── README.md                      # This file
 ```
 
-## Data Format
+## Architecture
 
-Data must be in a JSON format that looks similar to this (input/output keys):
+### Model Flow
 
-```json
-[
-  {
-    "input": "E0 . T3 . T5 . T18",
-    "output": "E45"
-  },
-  {
-    "input": "E0 . T3 . T8 . T16 . T16",
-    "output": "E1"
-  },
-  ...
-]
+```
+Input: Board state (256 nodes × 43 features)
+  ↓
+Input Projection (43 → 256)
+  ↓
+Transformer Encoder (6 layers, 8 heads)
+  - Bidirectional self-attention
+  - Each node attends to ALL other nodes
+  ↓
+Classification Head (256 → 1)
+  ↓
+Output: Binary prediction for each node
 ```
 
-## Data Tokenization
+### Feature Vector (43 dimensions)
 
-- Data will be tokenized like: `[PAD] [PAD] [BOS] E0 . T3 . T5 . T18 [OUT] E45 [EOS] ...` up to `model.block_size`
-- The `[OUT]` delimiter token is added during preprocessing in `data.py`
-- Anything after the delimiter, including the delimiter, is masked during training
-- The model trains to predict the content following the delimiter token
+```
+Position 0-4:   Robot type (one-hot: none/target/helper1/helper2/helper3)
+Position 5-6:   Has goal (one-hot: no/yes)
+Position 7-10:  Walls (one-hot: none/top/left/both)
+Position 11-26: X position (one-hot: 0-15)
+Position 27-42: Y position (one-hot: 0-15)
+```
+
+See [NODE_FLOW_DIAGRAM.md](NODE_FLOW_DIAGRAM.md) for detailed visualization.
 
 ## Configuration
 
-Every time you work on a new project, you need to update the configuration:
+All settings are in [`config/node_classifier.yaml`](config/node_classifier.yaml).
 
-- **config/base.yaml** contains default settings that should be modified for your specific project
-- Pay special attention to model parameters (size, heads, layers) and project naming
-- Run `python utils/get_data_info.py` to get information about your data length before setting `model.block_size`
-
-## Step-by-Step Tutorial
-
-### 1. Setup Environment
-
-First, create a virtual environment and install the required dependencies:
-
-```bash
-# Create a conda environment
-conda create -n llms python=3.11
-
-# Activate the environment
-# On Windows, macOS, and Linux:
-conda activate llms
-
-# Install dependencies
-pip install -r requirements.txt
-
-# In terminal, type:
-wandb login
-```
-
-### 2. Generate Data
-
-Create your dataset generation script in the `data_generation` directory:
-
-```bash
-# Place your script at data_generation/generate_data.py
-python data_generation/generate_data.py
-```
-
-This should create `train.json` and `test.json` in the `data` directory.
-
-### 3. Get Data Information
-
-Analyze your dataset to determine appropriate model parameters:
-
-```bash
-python utils/get_data_info.py
-```
-
-Take note of the token statistics to set an appropriate `model.block_size` value in the configuration.
-
-### 4. Configure Your Project
-
-Edit `config/base.yaml` with your project-specific settings:
-
-- Set `wandb.model_name` and `wandb.proj_name` with meaningful names
-- Configure model size parameters (`n_layer`, `n_head`, `n_embd`)
-- Set `model.block_size` based on your data statistics
-- Adjust batch sizes and other training parameters as needed
-
-### 5. Create Tokenizer
-
-Generate a tokenizer based on your data:
-
-```bash
-python utils/create_tokenizer.py
-```
-
-This creates a tokenizer specific to your dataset's vocabulary.
-
-### 6. Optional: Filter Data
-
-If needed, filter examples that are too long:
-
-```bash
-python utils/filter_data.py
-```
-
-### 7. Train the Model
-
-Start the training process:
-
-```bash
-python train.py
-```
-
-This will train the model according to your configuration and save checkpoints.
-
-### 8. Run Inference
-
-After training, run inference on new data:
-
-```bash
-python utils/inference.py
-```
-
-Place your inference data files in the `data/inference_data/` directory.
-
-## Evaluation
-
-The framework provides built-in evaluation metrics:
-
-- Token-level accuracy
-- Exact match accuracy
-- Detailed evaluation examples logged to Weights & Biases
-
-
-# Step-by-Step Tutorial for Clean Framework
-
-This tutorial provides detailed instructions for setting up and using the Clean Framework for language model training.
-
-## Prerequisites
-
-- Python 3.11
-- ROCm/CUDA-compatible GPU
-- Git (for version control)
-
-## 1. Project Configuration
-
-The first step is to configure your project by editing `config/base.yaml`. Here are the key sections to update:
-
-### Weights & Biases Configuration
+### Key Parameters
 
 ```yaml
-wandb:
-  # Name your model
-  model_name: "Pythia-12-8-256-MyProject" 
-  # Your project name
-  proj_name: "my-language-model-project"
-  num_examples_reported: 100
-```
+# Data
+data:
+  board_size: 16
+  batch_size: 32
+  positional_encoding: "onehot"  # Options: onehot, sinusoidal, normalized
 
-### Model Configuration
-
-```yaml
+# Model
 model:
-  name: ${wandb.model_name}
-  batch_size: 512
-  accumulate_grad_batches: 1
-  block_size: 1024  # Adjust based on your data
-  epochs: 100
+  d_model: 256          # Embedding dimension
+  nhead: 8              # Attention heads
+  num_layers: 6         # Transformer layers
+  dim_feedforward: 1024
+  dropout: 0.1
 
-  n_layer: 12       # Number of transformer layers
-  n_head: 8         # Number of attention heads
-  n_embd: 256       # Embedding dimension
+# Training
+training:
+  learning_rate: 1.0e-4
+  weight_decay: 0.01
+  warmup_steps: 1000
+
+# Checkpoints monitor val/exact_match (main metric)
+checkpoint:
+  monitor: "val/exact_match"
 ```
 
-### Optimizer Configuration
+## Positional Encoding
 
+The model supports multiple positional encoding strategies. Change in config:
+
+### One-Hot (Default)
 ```yaml
-optim:
-  lr_type: "linear"  # Options: "linear", "linear-reg", or None (cosine decay)
-  lr: 2e-4           # Learning rate (used for cosine schedule)
+data:
+  positional_encoding: "onehot"
+  # Feature dim: 11 + 32 = 43
 ```
 
-## 2. Data Generation
+### Sinusoidal
+```yaml
+data:
+  positional_encoding: "sinusoidal"
+  positional_encoding_kwargs: {encoding_dim: 64}
+  # Feature dim: 11 + 64 = 75
+```
 
-Create a data generation script at `data_generation/generate_data.py` that produces data in the required JSON format:
+### Normalized
+```yaml
+data:
+  positional_encoding: "normalized"
+  # Feature dim: 11 + 2 = 13
+```
+
+Test all encodings:
+```bash
+python test_positional_encodings.py
+```
+
+## Metrics
+
+### Main Metric: Exact Match
+- **Per-example accuracy**: An example is correct only if ALL 256 nodes are classified correctly
+- This is the primary metric for checkpointing and early stopping
+- Logged as `train/exact_match`, `val/exact_match`, `test/exact_match`
+
+### Secondary Metrics
+- **Node-level accuracy**: Percentage of correctly classified nodes
+- **Precision/Recall/F1**: Standard classification metrics
+- **AUROC**: Area under ROC curve
+
+## Visualization
+
+### Trace a Single Node
+```bash
+python visualize_node_processing.py
+```
+
+Shows:
+1. Raw data from JSON
+2. Positional encoding applied
+3. Feature concatenation
+4. Model processing step-by-step
+5. Final prediction
+
+### Architecture Diagram
+See [NODE_FLOW_DIAGRAM.md](NODE_FLOW_DIAGRAM.md) for ASCII diagrams.
+
+## Data Format
+
+Training data is JSON with board states:
+
+```json
+{
+  "metadata": {
+    "num_examples": 100,
+    "board_size": 16,
+    "nodes_per_example": 256,
+    "features_per_node": 14
+  },
+  "examples": [
+    {
+      "example_id": 0,
+      "nodes": [
+        [x, y, robot(5), goal(2), walls(4), label],
+        ...
+      ]
+    }
+  ]
+}
+```
+
+Generate more data:
+```bash
+# Edit data/mock.py to change num_examples
+python data/mock.py
+```
+
+## Training Tips
+
+1. **Class Imbalance**: Dataset is highly imbalanced (~1% positive). Model auto-computes `pos_weight`.
+
+2. **Learning Rate**: Start with `1e-4`. Reduce to `5e-5` if unstable.
+
+3. **Overfitting**: If validation plateaus:
+   - Increase dropout (try 0.2 or 0.3)
+   - Add more training data
+   - Reduce model size
+
+4. **GPU Memory**: If OOM, reduce `batch_size` or `d_model`.
+
+5. **Exact Match**: This metric is harder than accuracy. Expected range: 0.0-0.5 early, 0.7-0.9+ when trained well.
+
+## Model Size
+
+Default configuration (~4.8M parameters):
+- **Memory**: ~19MB (FP32), ~10MB (FP16)
+- **Training speed**: ~1-2 min/epoch on GPU (100 examples)
+
+## Example Code
 
 ```python
-# Example of a simple data generation script (data_generation/generate_data.py)
-import json
-import os
-import random
+from model import NodeClassifierLightningModule, RicochetRobotsDataset
+import torch
 
-def generate_examples(num_examples):
-    examples = []
-    for _ in range(num_examples):
-        # Generate your task-specific data here
-        # Example for a simple addition task:
-        a = random.randint(1, 100)
-        b = random.randint(1, 100)
-        input_text = f"Add {a} and {b}"
-        output_text = f"{a + b}"
-        
-        examples.append({
-            "input": input_text,
-            "output": output_text
-        })
-    return examples
+# Load trained model
+model = NodeClassifierLightningModule.load_from_checkpoint('checkpoints/best.ckpt')
+model.eval()
 
-def main():
-    # Create data directory if it doesn't exist
-    os.makedirs("data", exist_ok=True)
-    
-    # Generate training data
-    train_examples = generate_examples(10000)
-    with open("data/train.json", "w") as f:
-        json.dump(train_examples, f, indent=2)
-    
-    # Generate test data
-    test_examples = generate_examples(1000)
-    with open("data/test.json", "w") as f:
-        json.dump(test_examples, f, indent=2)
-    
-    print(f"Generated {len(train_examples)} training examples")
-    print(f"Generated {len(test_examples)} test examples")
+# Load data
+dataset = RicochetRobotsDataset('data/ricochet_data/dataset.json')
+sample = dataset[0]
 
-if __name__ == "__main__":
-    main()
+# Predict
+features = sample['features'].unsqueeze(0)  # [1, 256, 43]
+with torch.no_grad():
+    probs = model.model.predict_proba(features)  # [1, 256]
+    predictions = (probs > 0.5).long()
+
+print(f"Predicted {predictions.sum().item()} subgoals")
 ```
 
-Run the data generation script:
+## Advanced Usage
 
-```bash
-python data_generation/generate_data.py
+### Custom Positional Encoding
+
+Add new encoding to [`utils/positional_encoding.py`](utils/positional_encoding.py):
+
+```python
+class MyCustomEncoding(PositionalEncoding):
+    def encode(self, x, y, board_size):
+        # Your encoding logic
+        return encoding_vector
+
+    def get_encoding_dim(self, board_size):
+        return my_dim
 ```
 
-## 3. Analyze Data Characteristics
+Register in `create_positional_encoding()` factory.
 
-To properly set model parameters, analyze your data:
+### Custom Model Architecture
 
-```bash
-python utils/get_data_info.py
+Edit [`model/node_classifier.py`](model/node_classifier.py):
+- Change `d_model`, `nhead`, `num_layers` in config
+- Modify classification head
+- Add custom layers
+
+### Multi-GPU Training
+
+```yaml
+trainer:
+  devices: 2  # Use 2 GPUs
+  strategy: "ddp"  # Distributed data parallel
 ```
 
-This will provide important statistics about your dataset:
-- Average token count
-- Maximum token count
-- Token distribution
-- Sample examples
+## Troubleshooting
 
-Use this information to adjust your `model.block_size` in the configuration. The `block_size` should be large enough to accommodate most examples but not excessively large to waste memory.
+| Issue | Solution |
+|-------|----------|
+| Import errors | Run from project root |
+| Data not found | Generate with `python data/mock.py` |
+| CUDA OOM | Reduce `batch_size` or `d_model` |
+| Wandb not initialized | Run `wandb login` |
+| Low exact_match | Normal initially, should improve with training |
 
-## 4. Create a Tokenizer
+## References
 
-Generate a tokenizer based on your data:
-
-```bash
-python utils/create_tokenizer.py
-```
-
-This creates a custom tokenizer optimized for your dataset's vocabulary.
-
-## 5. Optional: Filter Data
-
-If your dataset contains examples that are too long for your chosen `block_size`, you can filter them:
-
-```bash
-# Update the filter settings in config/base.yaml first:
-data:
-  filter:
-    max_token_length: 1024  # Maximum token length for filtering examples
-
-# Then run the filter script
-python utils/filter_data.py
-```
-
-## 6. Start Training
-
-Launch the training process:
-
-```bash
-python train.py
-```
-
-The training script will:
-1. Load your data
-2. Initialize the model
-3. Train for the specified number of epochs
-4. Save checkpoints based on validation accuracy
-5. Log metrics to Weights & Biases (if configured)
-
-## 7. Monitor Training
-
-If you've configured Weights & Biases, you can monitor your training:
-
-1. Open your web browser
-2. Go to [https://wandb.ai](https://wandb.ai)
-3. Navigate to your project
-4. View training metrics and sample predictions
-
-## 8. Run Inference
-
-After training, you can run inference on new data:
-
-1. Create JSON files in the `data/inference_data/` directory with the same format as your training data
-2. Run the inference script:
-
-```bash
-python utils/inference.py
-```
-
-The script will generate predictions and calculate accuracy metrics.
-
-## 9. Create Custom Tasks
-
-To implement your own custom tasks:
-1. Design your task and data format
-2. Create a generation script in `data_generation/`
-3. Update config as needed for your specific task
-4. Follow the standard training workflow
+- **Transformer Architecture**: "Attention Is All You Need" (Vaswani et al., 2017)
+- **PyTorch Lightning**: https://lightning.ai/
+- **Weights & Biases**: https://wandb.ai/
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT License - see LICENSE file for details.
