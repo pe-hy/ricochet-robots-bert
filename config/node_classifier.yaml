@@ -14,20 +14,19 @@ seed: 42
 wandb:
   project: ricochet-robots-node-classifier
   name: null  # Auto-generate name if null
-  save_dir: ./wandb_logs
-  log_model: true
-  log_code: true
+  save_dir: ./tmp/wandb_logs
+  log_model: false
 
 # Data configuration
 data:
   train_path: data/ricochet_data/dataset.json
   board_size: 16
-  batch_size: 32
+  batch_size: 128
   num_workers: 4
 
   # Split configuration (absolute numbers)
-  val_size: 16      # Number of examples for validation
-  test_size: 16     # Number of examples for test (0 = no test set)
+  val_size: 256      # Number of examples for validation
+  test_size: 256     # Number of examples for test (0 = no test set)
 
   # Positional encoding
   positional_encoding: onehot  # Options: onehot, sinusoidal, normalized, learned
@@ -44,12 +43,11 @@ model:
 
 # Training configuration
 training:
-  max_lr: 1.0e-3
+  max_lr: 0.001
   weight_decay: 0.01
-  warmup_epochs: 5
-  pos_weight: null
+  warmup_epochs: 20
+  pos_weight: 1  # Equal weighting, no auto-computation (null would auto-compute)
   log_predictions: true
-  log_every_n_steps: 100
 
 # PyTorch Lightning Trainer
 trainer:
@@ -57,7 +55,7 @@ trainer:
   accelerator: auto
   devices: auto
   strategy: auto
-  precision: 32-true
+  precision: bf16-mixed
   log_every_n_steps: 50
   val_check_interval: 1.0
   gradient_clip_val: 1.0
@@ -67,8 +65,8 @@ trainer:
 
 # Checkpoint configuration
 checkpoint:
-  dirpath: ./checkpoints
-  filename: node_classifier-{epoch:02d}-{val/exact_match:.4f}
+  dirpath: ./tmp/checkpoints
+  filename: robots_classifier-{epoch:02d}-{val/exact_match:.4f}
   monitor: val/exact_match
   mode: max
   save_top_k: 3
@@ -76,7 +74,7 @@ checkpoint:
 
 # Early stopping
 early_stopping:
-  enabled: true
+  enabled: false
   monitor: val/exact_match
   patience: 10
   mode: max
@@ -84,7 +82,7 @@ early_stopping:
 # Hydra configuration
 hydra:
   run:
-    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: ./tmp/hydra
   sweep:
-    dir: multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
-    subdir: ${hydra.job.num}
+    dir: ./tmp/hydra/sweep/
+    subdir: "sub"

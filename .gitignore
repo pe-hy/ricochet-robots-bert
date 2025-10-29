@@ -1,4 +1,6 @@
 # Folders with data, models, logs...
+tmp/
+checkpoints/
 !data_generation/*.py
 !data_generation/*.gitkeep
 

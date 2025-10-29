@@ -12,6 +12,7 @@ import wandb
 
 from model.node_classifier import NodeClassifierTransformer, NodeClassifierConfig
 
+import math
 
 class NodeClassifierLightningModule(pl.LightningModule):
     """
@@ -28,7 +29,6 @@ class NodeClassifierLightningModule(pl.LightningModule):
         total_epochs: int = 100,
         pos_weight: Optional[float] = None,
         log_predictions: bool = True,
-        log_every_n_steps: int = 100,
     ):
         """
         Args:
@@ -39,7 +39,6 @@ class NodeClassifierLightningModule(pl.LightningModule):
             total_epochs: Total number of training epochs (for cosine scheduler)
             pos_weight: Positive class weight for imbalanced datasets (None = auto-compute)
             log_predictions: Whether to log example predictions to wandb
-            log_every_n_steps: Log predictions every N steps
         """
         super().__init__()
 
@@ -77,7 +76,6 @@ class NodeClassifierLightningModule(pl.LightningModule):
 
         # For logging
         self.log_predictions = log_predictions
-        self.log_every_n_steps = log_every_n_steps
 
     def _init_criterion(self, labels: torch.Tensor):
         """Initialize loss function with appropriate pos_weight"""
@@ -268,10 +266,13 @@ class NodeClassifierLightningModule(pl.LightningModule):
         labels = batch['labels']      # [batch_size, num_nodes]
         probs = torch.sigmoid(logits.squeeze(-1))  # [batch_size, num_nodes]
 
-        # Log first example in batch
-        example_features = features[0].cpu().numpy()  # [num_nodes, feature_dim]
-        example_labels = labels[0].cpu().numpy()      # [num_nodes]
-        example_probs = probs[0].cpu().numpy()        # [num_nodes]
+        # # Log first example in batch
+        # example_features = features[0].cpu().float().numpy(force=True)  # [num_nodes, feature_dim]
+        # example_labels = labels[0].cpu().float().numpy(force=True)      # [num_nodes]
+        # example_probs = probs[0].cpu().float().numpy(force=True)        # [num_nodes]
+        example_features = features[0].detach().to(torch.float32).cpu().numpy()
+        example_labels   = labels[0].detach().to(torch.float32).cpu().numpy()
+        example_probs    = probs[0].detach().to(torch.float32).cpu().numpy()
 
         # Create table
         columns = ['node_id', 'label', 'prediction', 'probability']
@@ -302,51 +303,40 @@ class NodeClassifierLightningModule(pl.LightningModule):
         self.test_exact_matches = []
 
     def configure_optimizers(self):
-        """Configure optimizer and learning rate scheduler"""
-        # AdamW optimizer
         optimizer = torch.optim.AdamW(
             self.parameters(),
             lr=self.hparams.max_lr,
-            weight_decay=self.hparams.weight_decay,
-            betas=(0.9, 0.999),
-            eps=1e-8
+            weight_decay=self.hparams.weight_decay
         )
 
-        # Learning rate scheduler: Linear warmup + Cosine annealing
-        # Warmup: 0 -> max_lr over warmup_epochs
-        # Cosine: max_lr -> 0 over remaining epochs
+        # Calculate total training steps
+        # We'll use trainer.estimated_stepping_batches if available (Lightning 1.7+)
+        # Otherwise fall back to epoch-based scheduling
+        if hasattr(self.trainer, 'estimated_stepping_batches'):
+            total_steps = self.trainer.estimated_stepping_batches
+            warmup_steps = int(total_steps * (self.hparams.warmup_epochs / self.hparams.total_epochs))
+        else:
+            # Fallback: approximate based on epochs
+            # This will be corrected on first call
+            total_steps = 1000 * self.hparams.total_epochs  # rough estimate
+            warmup_steps = 1000 * self.hparams.warmup_epochs
 
-        warmup_epochs = self.hparams.warmup_epochs
-        total_epochs = self.hparams.total_epochs
-        cosine_epochs = total_epochs - warmup_epochs
+        def lr_lambda(current_step):
+            if current_step < warmup_steps:
+                # Linear warmup
+                return float(current_step) / float(max(1, warmup_steps))
+            else:
+                # Cosine annealing
+                progress = (current_step - warmup_steps) / max(1, total_steps - warmup_steps)
+                return 0.5 * (1.0 + math.cos(progress * math.pi))
 
-        # Linear warmup scheduler
-        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
-            optimizer,
-            start_factor=1e-6 / self.hparams.max_lr,  # Start from very small LR
-            end_factor=1.0,  # End at max_lr
-            total_iters=warmup_epochs
-        )
-
-        # Cosine annealing scheduler
-        cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=cosine_epochs,
-            eta_min=0  # Decay to 0
-        )
-
-        # Combine: warmup then cosine
-        scheduler = torch.optim.lr_scheduler.SequentialLR(
-            optimizer,
-            schedulers=[warmup_scheduler, cosine_scheduler],
-            milestones=[warmup_epochs]
-        )
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
         return {
             'optimizer': optimizer,
             'lr_scheduler': {
                 'scheduler': scheduler,
-                'interval': 'epoch',  # Schedule per epoch, not per step
+                'interval': 'step',  # Update per step, not per epoch
                 'frequency': 1
             }
         }

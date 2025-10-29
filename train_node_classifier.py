@@ -56,13 +56,6 @@ def main(cfg: DictConfig) -> None:
         log_model=cfg.wandb.log_model,
     )
 
-    # Log code to wandb
-    if cfg.wandb.log_code:
-        wandb.run.log_code(
-            root='.',
-            include_fn=lambda path: path.endswith('.py') or path.endswith('.yaml')
-        )
-
     # Create data module
     data_module = RicochetRobotsDataModule(
         train_path=cfg.data.train_path,
@@ -95,7 +88,6 @@ def main(cfg: DictConfig) -> None:
         total_epochs=cfg.trainer.epochs,
         pos_weight=cfg.training.pos_weight,
         log_predictions=cfg.training.log_predictions,
-        log_every_n_steps=cfg.training.log_every_n_steps,
     )
 
     # Create callbacks
@@ -124,7 +116,7 @@ def main(cfg: DictConfig) -> None:
         callbacks.append(early_stopping_callback)
 
     # Learning rate monitor
-    lr_monitor = LearningRateMonitor(logging_interval='epoch')
+    lr_monitor = LearningRateMonitor(logging_interval='step')
     callbacks.append(lr_monitor)
 
     # Create trainer
