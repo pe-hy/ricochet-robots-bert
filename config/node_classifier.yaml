@@ -1,81 +1,90 @@
-# Configuration for Ricochet Robots Node Classifier
-# Transformer model for binary subgoal prediction
+# @package _global_
+
+# Hydra configuration for Ricochet Robots Node Classifier
+# Usage: python train_node_classifier.py [options]
+# Override: python train_node_classifier.py trainer.epochs=50 training.max_lr=2e-3
+
+defaults:
+  - _self_
 
 # Random seed for reproducibility
 seed: 42
 
 # Weights & Biases configuration
 wandb:
-  project: "ricochet-robots-node-classifier"
+  project: ricochet-robots-node-classifier
   name: null  # Auto-generate name if null
-  save_dir: "./wandb_logs"
-  log_model: true  # Save model checkpoints to wandb
-  log_code: true   # Log code to wandb
+  save_dir: ./wandb_logs
+  log_model: true
+  log_code: true
 
 # Data configuration
 data:
-  train_path: "data/ricochet_data/dataset.json"
-  val_path: null  # If null, will split from train_path
-  test_path: null
+  train_path: data/ricochet_data/dataset.json
   board_size: 16
   batch_size: 32
   num_workers: 4
-  train_val_split: 0.8  # Fraction for training (rest for validation)
 
-  # Positional encoding configuration
-  positional_encoding: "onehot"  # Options: onehot, sinusoidal, normalized, learned
-  positional_encoding_kwargs: {}  # Additional kwargs for positional encoding
-  # Example for sinusoidal: positional_encoding_kwargs: {encoding_dim: 64}
-  # Example for learned: positional_encoding_kwargs: {embedding_dim: 64}
+  # Split configuration (absolute numbers)
+  val_size: 16      # Number of examples for validation
+  test_size: 16     # Number of examples for test (0 = no test set)
 
-# Model architecture configuration
+  # Positional encoding
+  positional_encoding: onehot  # Options: onehot, sinusoidal, normalized, learned
+  positional_encoding_kwargs: {}
+
+# Model architecture
 model:
-  # feature_dim is computed automatically: 11 + 2*board_size
-  # For 16x16 board: 11 + 32 = 43
-  d_model: 256          # Transformer embedding dimension
-  nhead: 8              # Number of attention heads
-  num_layers: 6         # Number of transformer encoder layers
-  dim_feedforward: 1024 # Feedforward network dimension
-  dropout: 0.1          # Dropout probability
-  activation: "gelu"    # Activation function (gelu or relu)
+  d_model: 256
+  nhead: 8
+  num_layers: 6
+  dim_feedforward: 1024
+  dropout: 0.1
+  activation: gelu
 
 # Training configuration
 training:
-  learning_rate: 1.0e-4  # Learning rate
-  weight_decay: 0.01     # Weight decay (L2 regularization)
-  warmup_steps: 1000     # Learning rate warmup steps
-  max_steps: 100000      # Maximum training steps (for LR scheduler)
-  pos_weight: null       # Positive class weight (null = auto-compute from data)
-  log_predictions: true  # Log example predictions to wandb
-  log_every_n_steps: 100 # Log predictions every N steps
+  max_lr: 1.0e-3
+  weight_decay: 0.01
+  warmup_epochs: 5
+  pos_weight: null
+  log_predictions: true
+  log_every_n_steps: 100
 
-# PyTorch Lightning Trainer configuration
+# PyTorch Lightning Trainer
 trainer:
-  max_epochs: 100
-  max_steps: -1          # -1 = train for max_epochs
-  accelerator: "auto"    # auto, gpu, cpu, tpu
-  devices: "auto"        # auto, 1, 2, etc.
-  strategy: "auto"       # auto, ddp, deepspeed, etc.
-  precision: "32-true"   # 32-true, 16-mixed, bf16-mixed
+  epochs: 100
+  accelerator: auto
+  devices: auto
+  strategy: auto
+  precision: 32-true
   log_every_n_steps: 50
-  val_check_interval: 1.0  # Validate every epoch (1.0) or every N steps
-  gradient_clip_val: 1.0   # Gradient clipping threshold
-  accumulate_grad_batches: 1  # Gradient accumulation steps
-  deterministic: false   # Deterministic training (slower but reproducible)
-  benchmark: true        # Enable cuDNN benchmark for faster training
+  val_check_interval: 1.0
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  deterministic: false
+  benchmark: true
 
 # Checkpoint configuration
 checkpoint:
-  dirpath: "./checkpoints"
-  filename: "node_classifier-{epoch:02d}-{val/exact_match:.4f}"
-  monitor: "val/exact_match"  # Metric to monitor (MAIN METRIC: per-example accuracy)
-  mode: "max"            # max or min
-  save_top_k: 3          # Save top K checkpoints
-  save_last: true        # Save last checkpoint
+  dirpath: ./checkpoints
+  filename: node_classifier-{epoch:02d}-{val/exact_match:.4f}
+  monitor: val/exact_match
+  mode: max
+  save_top_k: 3
+  save_last: true
 
-# Early stopping configuration
+# Early stopping
 early_stopping:
   enabled: true
-  monitor: "val/exact_match"  # Metric to monitor (MAIN METRIC: per-example accuracy)
-  patience: 10           # Number of epochs with no improvement
-  mode: "max"            # max or min
+  monitor: val/exact_match
+  patience: 10
+  mode: max
+
+# Hydra configuration
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}

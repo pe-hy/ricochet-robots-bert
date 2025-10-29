@@ -22,10 +22,10 @@ class NodeClassifierLightningModule(pl.LightningModule):
     def __init__(
         self,
         model_config: NodeClassifierConfig,
-        learning_rate: float = 1e-4,
+        max_lr: float = 1e-3,
         weight_decay: float = 0.01,
-        warmup_steps: int = 1000,
-        max_steps: int = 100000,
+        warmup_epochs: int = 5,
+        total_epochs: int = 100,
         pos_weight: Optional[float] = None,
         log_predictions: bool = True,
         log_every_n_steps: int = 100,
@@ -33,10 +33,10 @@ class NodeClassifierLightningModule(pl.LightningModule):
         """
         Args:
             model_config: Configuration for the model
-            learning_rate: Learning rate for optimizer
+            max_lr: Maximum learning rate (peak after warmup)
             weight_decay: Weight decay for optimizer
-            warmup_steps: Number of warmup steps for learning rate scheduler
-            max_steps: Maximum number of training steps
+            warmup_epochs: Number of epochs for linear warmup
+            total_epochs: Total number of training epochs (for cosine scheduler)
             pos_weight: Positive class weight for imbalanced datasets (None = auto-compute)
             log_predictions: Whether to log example predictions to wandb
             log_every_n_steps: Log predictions every N steps
@@ -306,29 +306,47 @@ class NodeClassifierLightningModule(pl.LightningModule):
         # AdamW optimizer
         optimizer = torch.optim.AdamW(
             self.parameters(),
-            lr=self.hparams.learning_rate,
+            lr=self.hparams.max_lr,
             weight_decay=self.hparams.weight_decay,
             betas=(0.9, 0.999),
             eps=1e-8
         )
 
-        # Learning rate scheduler with warmup
-        def lr_lambda(step):
-            if step < self.hparams.warmup_steps:
-                # Linear warmup
-                return step / max(1, self.hparams.warmup_steps)
-            else:
-                # Cosine decay
-                progress = (step - self.hparams.warmup_steps) / max(1, self.hparams.max_steps - self.hparams.warmup_steps)
-                return 0.5 * (1 + torch.cos(torch.tensor(progress * 3.141592653589793)))
+        # Learning rate scheduler: Linear warmup + Cosine annealing
+        # Warmup: 0 -> max_lr over warmup_epochs
+        # Cosine: max_lr -> 0 over remaining epochs
 
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+        warmup_epochs = self.hparams.warmup_epochs
+        total_epochs = self.hparams.total_epochs
+        cosine_epochs = total_epochs - warmup_epochs
+
+        # Linear warmup scheduler
+        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=1e-6 / self.hparams.max_lr,  # Start from very small LR
+            end_factor=1.0,  # End at max_lr
+            total_iters=warmup_epochs
+        )
+
+        # Cosine annealing scheduler
+        cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=cosine_epochs,
+            eta_min=0  # Decay to 0
+        )
+
+        # Combine: warmup then cosine
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup_scheduler, cosine_scheduler],
+            milestones=[warmup_epochs]
+        )
 
         return {
             'optimizer': optimizer,
             'lr_scheduler': {
                 'scheduler': scheduler,
-                'interval': 'step',
+                'interval': 'epoch',  # Schedule per epoch, not per step
                 'frequency': 1
             }
         }

@@ -1,12 +1,22 @@
 """
-Training script for Ricochet Robots node classifier.
+Training script for Ricochet Robots node classifier using Hydra.
 
 Usage:
-    python train_node_classifier.py --config config/node_classifier.yaml
+    # Basic training
+    python train_node_classifier.py
+
+    # Override config values
+    python train_node_classifier.py trainer.epochs=50 training.max_lr=2e-3
+
+    # Change data split
+    python train_node_classifier.py data.val_size=32 data.test_size=32
+
+    # Use different config
+    python train_node_classifier.py --config-name=my_config
 """
 
-import argparse
-import yaml
+import hydra
+from omegaconf import DictConfig, OmegaConf
 from pathlib import Path
 import torch
 import pytorch_lightning as pl
@@ -19,142 +29,123 @@ from model.lightning_module import NodeClassifierLightningModule
 from utils.data_module import RicochetRobotsDataModule
 
 
-def load_config(config_path: str) -> dict:
-    """Load configuration from YAML file"""
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    return config
-
-
-def main(config_path: str = None, **kwargs):
+@hydra.main(version_base=None, config_path="config", config_name="node_classifier")
+def main(cfg: DictConfig) -> None:
     """
-    Main training function.
+    Main training function using Hydra configuration.
 
     Args:
-        config_path: Path to config YAML file
-        **kwargs: Override config values
+        cfg: Hydra configuration object
     """
-    # Load config
-    if config_path is not None:
-        config = load_config(config_path)
-    else:
-        config = {}
-
-    # Override with kwargs
-    config.update(kwargs)
+    # Print config
+    print("=" * 80)
+    print("CONFIGURATION")
+    print("=" * 80)
+    print(OmegaConf.to_yaml(cfg))
+    print("=" * 80)
 
     # Set random seed for reproducibility
-    seed = config.get('seed', 42)
-    pl.seed_everything(seed, workers=True)
+    pl.seed_everything(cfg.seed, workers=True)
 
     # Initialize wandb
-    wandb_config = config.get('wandb', {})
     logger = WandbLogger(
-        project=wandb_config.get('project', 'ricochet-robots-node-classifier'),
-        name=wandb_config.get('name', None),
-        config=config,
-        save_dir=wandb_config.get('save_dir', './wandb_logs'),
-        log_model=wandb_config.get('log_model', True),
+        project=cfg.wandb.project,
+        name=cfg.wandb.name,
+        config=OmegaConf.to_container(cfg, resolve=True),
+        save_dir=cfg.wandb.save_dir,
+        log_model=cfg.wandb.log_model,
     )
 
     # Log code to wandb
-    if wandb_config.get('log_code', True):
+    if cfg.wandb.log_code:
         wandb.run.log_code(
             root='.',
             include_fn=lambda path: path.endswith('.py') or path.endswith('.yaml')
         )
 
     # Create data module
-    data_config = config.get('data', {})
     data_module = RicochetRobotsDataModule(
-        train_path=data_config.get('train_path', 'data/ricochet_data/dataset.json'),
-        val_path=data_config.get('val_path', None),
-        test_path=data_config.get('test_path', None),
-        board_size=data_config.get('board_size', 16),
-        batch_size=data_config.get('batch_size', 32),
-        num_workers=data_config.get('num_workers', 4),
-        train_val_split=data_config.get('train_val_split', 0.8),
-        positional_encoding=data_config.get('positional_encoding', 'onehot'),
-        positional_encoding_kwargs=data_config.get('positional_encoding_kwargs', {})
+        train_path=cfg.data.train_path,
+        board_size=cfg.data.board_size,
+        batch_size=cfg.data.batch_size,
+        num_workers=cfg.data.num_workers,
+        val_size=cfg.data.val_size,
+        test_size=cfg.data.test_size,
+        positional_encoding=cfg.data.positional_encoding,
+        positional_encoding_kwargs=OmegaConf.to_container(cfg.data.positional_encoding_kwargs)
     )
 
     # Create model config (use computed feature_dim from data_module)
-    model_config_dict = config.get('model', {})
     model_config = NodeClassifierConfig(
-        feature_dim=data_module.feature_dim,  # Computed automatically based on positional encoding
-        d_model=model_config_dict.get('d_model', 256),
-        nhead=model_config_dict.get('nhead', 8),
-        num_layers=model_config_dict.get('num_layers', 6),
-        dim_feedforward=model_config_dict.get('dim_feedforward', 1024),
-        dropout=model_config_dict.get('dropout', 0.1),
-        activation=model_config_dict.get('activation', 'gelu'),
+        feature_dim=data_module.feature_dim,
+        d_model=cfg.model.d_model,
+        nhead=cfg.model.nhead,
+        num_layers=cfg.model.num_layers,
+        dim_feedforward=cfg.model.dim_feedforward,
+        dropout=cfg.model.dropout,
+        activation=cfg.model.activation,
     )
 
     # Create Lightning module
-    training_config = config.get('training', {})
     lightning_module = NodeClassifierLightningModule(
         model_config=model_config,
-        learning_rate=training_config.get('learning_rate', 1e-4),
-        weight_decay=training_config.get('weight_decay', 0.01),
-        warmup_steps=training_config.get('warmup_steps', 1000),
-        max_steps=training_config.get('max_steps', 100000),
-        pos_weight=training_config.get('pos_weight', None),
-        log_predictions=training_config.get('log_predictions', True),
-        log_every_n_steps=training_config.get('log_every_n_steps', 100),
+        max_lr=cfg.training.max_lr,
+        weight_decay=cfg.training.weight_decay,
+        warmup_epochs=cfg.training.warmup_epochs,
+        total_epochs=cfg.trainer.epochs,
+        pos_weight=cfg.training.pos_weight,
+        log_predictions=cfg.training.log_predictions,
+        log_every_n_steps=cfg.training.log_every_n_steps,
     )
 
     # Create callbacks
     callbacks = []
 
     # Checkpoint callback
-    checkpoint_config = config.get('checkpoint', {})
     checkpoint_callback = ModelCheckpoint(
-        dirpath=checkpoint_config.get('dirpath', './checkpoints'),
-        filename=checkpoint_config.get('filename', 'node_classifier-{epoch:02d}-{val/f1:.4f}'),
-        monitor=checkpoint_config.get('monitor', 'val/f1'),
-        mode=checkpoint_config.get('mode', 'max'),
-        save_top_k=checkpoint_config.get('save_top_k', 3),
-        save_last=checkpoint_config.get('save_last', True),
+        dirpath=cfg.checkpoint.dirpath,
+        filename=cfg.checkpoint.filename,
+        monitor=cfg.checkpoint.monitor,
+        mode=cfg.checkpoint.mode,
+        save_top_k=cfg.checkpoint.save_top_k,
+        save_last=cfg.checkpoint.save_last,
         verbose=True
     )
     callbacks.append(checkpoint_callback)
 
     # Early stopping callback
-    early_stop_config = config.get('early_stopping', {})
-    if early_stop_config.get('enabled', True):
+    if cfg.early_stopping.enabled:
         early_stopping_callback = EarlyStopping(
-            monitor=early_stop_config.get('monitor', 'val/f1'),
-            patience=early_stop_config.get('patience', 10),
-            mode=early_stop_config.get('mode', 'max'),
+            monitor=cfg.early_stopping.monitor,
+            patience=cfg.early_stopping.patience,
+            mode=cfg.early_stopping.mode,
             verbose=True
         )
         callbacks.append(early_stopping_callback)
 
     # Learning rate monitor
-    lr_monitor = LearningRateMonitor(logging_interval='step')
+    lr_monitor = LearningRateMonitor(logging_interval='epoch')
     callbacks.append(lr_monitor)
 
     # Create trainer
-    trainer_config = config.get('trainer', {})
     trainer = pl.Trainer(
-        max_epochs=trainer_config.get('max_epochs', 100),
-        max_steps=trainer_config.get('max_steps', -1),
-        accelerator=trainer_config.get('accelerator', 'auto'),
-        devices=trainer_config.get('devices', 'auto'),
-        strategy=trainer_config.get('strategy', 'auto'),
-        precision=trainer_config.get('precision', '32-true'),
+        max_epochs=cfg.trainer.epochs,
+        accelerator=cfg.trainer.accelerator,
+        devices=cfg.trainer.devices,
+        strategy=cfg.trainer.strategy,
+        precision=cfg.trainer.precision,
         logger=logger,
         callbacks=callbacks,
-        log_every_n_steps=trainer_config.get('log_every_n_steps', 50),
-        val_check_interval=trainer_config.get('val_check_interval', 1.0),
-        gradient_clip_val=trainer_config.get('gradient_clip_val', 1.0),
-        accumulate_grad_batches=trainer_config.get('accumulate_grad_batches', 1),
-        deterministic=trainer_config.get('deterministic', False),
-        benchmark=trainer_config.get('benchmark', True),
+        log_every_n_steps=cfg.trainer.log_every_n_steps,
+        val_check_interval=cfg.trainer.val_check_interval,
+        gradient_clip_val=cfg.trainer.gradient_clip_val,
+        accumulate_grad_batches=cfg.trainer.accumulate_grad_batches,
+        deterministic=cfg.trainer.deterministic,
+        benchmark=cfg.trainer.benchmark,
     )
 
-    # Print configuration
-    print("=" * 80)
+    # Print configuration summary
+    print("\n" + "=" * 80)
     print("TRAINING CONFIGURATION")
     print("=" * 80)
     print(f"Model: Transformer Node Classifier")
@@ -163,17 +154,19 @@ def main(config_path: str = None, **kwargs):
     print(f"  - nhead: {model_config.nhead}")
     print(f"  - feature_dim: {model_config.feature_dim}")
     print(f"\nData:")
-    print(f"  - train_path: {data_config.get('train_path')}")
-    print(f"  - batch_size: {data_config.get('batch_size')}")
-    print(f"  - board_size: {data_config.get('board_size')}")
+    print(f"  - train_path: {cfg.data.train_path}")
+    print(f"  - batch_size: {cfg.data.batch_size}")
+    print(f"  - board_size: {cfg.data.board_size}")
+    print(f"  - val_size: {cfg.data.val_size}")
+    print(f"  - test_size: {cfg.data.test_size}")
     print(f"\nTraining:")
-    print(f"  - learning_rate: {training_config.get('learning_rate')}")
-    print(f"  - max_epochs: {trainer_config.get('max_epochs')}")
-    print(f"  - warmup_steps: {training_config.get('warmup_steps')}")
-    print(f"  - weight_decay: {training_config.get('weight_decay')}")
+    print(f"  - max_lr: {cfg.training.max_lr}")
+    print(f"  - epochs: {cfg.trainer.epochs}")
+    print(f"  - warmup_epochs: {cfg.training.warmup_epochs}")
+    print(f"  - weight_decay: {cfg.training.weight_decay}")
     print(f"\nWandB:")
-    print(f"  - project: {wandb_config.get('project')}")
-    print(f"  - name: {wandb_config.get('name', 'auto')}")
+    print(f"  - project: {cfg.wandb.project}")
+    print(f"  - name: {cfg.wandb.name if cfg.wandb.name else 'auto'}")
     print("=" * 80)
 
     # Count parameters
@@ -202,49 +195,4 @@ def main(config_path: str = None, **kwargs):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Train Ricochet Robots node classifier')
-    parser.add_argument(
-        '--config',
-        type=str,
-        default='config/node_classifier.yaml',
-        help='Path to config file'
-    )
-    parser.add_argument(
-        '--data_path',
-        type=str,
-        default=None,
-        help='Override data path'
-    )
-    parser.add_argument(
-        '--batch_size',
-        type=int,
-        default=None,
-        help='Override batch size'
-    )
-    parser.add_argument(
-        '--learning_rate',
-        type=float,
-        default=None,
-        help='Override learning rate'
-    )
-    parser.add_argument(
-        '--max_epochs',
-        type=int,
-        default=None,
-        help='Override max epochs'
-    )
-
-    args = parser.parse_args()
-
-    # Build kwargs from args
-    kwargs = {}
-    if args.data_path is not None:
-        kwargs['data'] = {'train_path': args.data_path}
-    if args.batch_size is not None:
-        kwargs.setdefault('data', {})['batch_size'] = args.batch_size
-    if args.learning_rate is not None:
-        kwargs['training'] = {'learning_rate': args.learning_rate}
-    if args.max_epochs is not None:
-        kwargs['trainer'] = {'max_epochs': args.max_epochs}
-
-    main(config_path=args.config, **kwargs)
+    main()

@@ -133,35 +133,32 @@ class RicochetRobotsDataModule(pl.LightningDataModule):
     def __init__(
         self,
         train_path: str,
-        val_path: Optional[str] = None,
-        test_path: Optional[str] = None,
         board_size: int = 16,
         batch_size: int = 32,
         num_workers: int = 4,
-        train_val_split: float = 0.8,
+        val_size: int = 16,
+        test_size: int = 0,
         positional_encoding: str = 'onehot',
         positional_encoding_kwargs: Optional[Dict] = None
     ):
         """
         Args:
             train_path: Path to training data JSON
-            val_path: Path to validation data JSON (if None, will split from train)
-            test_path: Path to test data JSON
             board_size: Board size (default 16)
             batch_size: Batch size for DataLoader
             num_workers: Number of workers for DataLoader
-            train_val_split: Fraction of train data to use for training (rest for val)
+            val_size: Number of examples for validation set
+            test_size: Number of examples for test set (0 = no test set)
             positional_encoding: Type of positional encoding ('onehot', 'sinusoidal', 'normalized', 'learned')
             positional_encoding_kwargs: Additional kwargs for positional encoding
         """
         super().__init__()
         self.train_path = train_path
-        self.val_path = val_path
-        self.test_path = test_path
         self.board_size = board_size
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.train_val_split = train_val_split
+        self.val_size = val_size
+        self.test_size = test_size
         self.positional_encoding = positional_encoding
         self.positional_encoding_kwargs = positional_encoding_kwargs or {}
 
@@ -180,40 +177,45 @@ class RicochetRobotsDataModule(pl.LightningDataModule):
         """Set up datasets for different stages"""
 
         if stage == 'fit' or stage is None:
-            # Load training data
-            full_train_dataset = RicochetRobotsDataset(
+            # Load full dataset
+            full_dataset = RicochetRobotsDataset(
                 self.train_path,
                 board_size=self.board_size,
                 positional_encoding=self.positional_encoding,
                 positional_encoding_kwargs=self.positional_encoding_kwargs
             )
 
-            # Split into train/val if no separate val set
-            if self.val_path is None:
-                train_size = int(self.train_val_split * len(full_train_dataset))
-                val_size = len(full_train_dataset) - train_size
-                self.train_dataset, self.val_dataset = torch.utils.data.random_split(
-                    full_train_dataset,
-                    [train_size, val_size],
+            total_size = len(full_dataset)
+
+            # Calculate split sizes
+            test_size = self.test_size if self.test_size > 0 else 0
+            val_size = self.val_size
+            train_size = total_size - val_size - test_size
+
+            if train_size <= 0:
+                raise ValueError(
+                    f"Not enough data: total={total_size}, val={val_size}, test={test_size}. "
+                    f"Need at least {val_size + test_size + 1} examples."
+                )
+
+            # Split dataset
+            if test_size > 0:
+                self.train_dataset, self.val_dataset, self.test_dataset = torch.utils.data.random_split(
+                    full_dataset,
+                    [train_size, val_size, test_size],
                     generator=torch.Generator().manual_seed(42)
                 )
             else:
-                self.train_dataset = full_train_dataset
-                self.val_dataset = RicochetRobotsDataset(
-                    self.val_path,
-                    board_size=self.board_size,
-                    positional_encoding=self.positional_encoding,
-                    positional_encoding_kwargs=self.positional_encoding_kwargs
+                self.train_dataset, self.val_dataset = torch.utils.data.random_split(
+                    full_dataset,
+                    [train_size, val_size],
+                    generator=torch.Generator().manual_seed(42)
                 )
+                self.test_dataset = None
 
-        if stage == 'test' or stage is None:
-            if self.test_path is not None:
-                self.test_dataset = RicochetRobotsDataset(
-                    self.test_path,
-                    board_size=self.board_size,
-                    positional_encoding=self.positional_encoding,
-                    positional_encoding_kwargs=self.positional_encoding_kwargs
-                )
+        if stage == 'test' and self.test_dataset is None:
+            # If no test set was created, skip test stage
+            pass
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
