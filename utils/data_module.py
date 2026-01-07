@@ -22,11 +22,11 @@ class RicochetRobotsDataset(Dataset):
     Features per node:
     - robot_type: 5 dims (one-hot)
     - has_goal: 2 dims (one-hot)
-    - walls: 4 dims (one-hot)
+    - walls: 5 dims (one-hot)
     - positional_encoding: variable dims (depends on encoding type)
-    Total: 11 + positional_encoding_dim
+    Total: 12 + positional_encoding_dim
 
-    For 16x16 board with one-hot encoding: 11 + 32 = 43 features
+    For 16x16 board with one-hot encoding: 12 + 32 = 44 features
     """
 
     def __init__(
@@ -46,10 +46,14 @@ class RicochetRobotsDataset(Dataset):
         self.board_size = board_size
         self.positional_encoding_kwargs = positional_encoding_kwargs or {}
 
+        # Filter out model-specific kwargs (combine_method is used by model, not encoder)
+        encoder_kwargs = {k: v for k, v in self.positional_encoding_kwargs.items()
+                         if k not in ('combine_method',)}
+
         # Create positional encoding strategy
         self.pos_encoder = create_positional_encoding(
             positional_encoding,
-            **self.positional_encoding_kwargs
+            **encoder_kwargs
         )
 
         self.data = self._load_data(data_path)
@@ -64,19 +68,19 @@ class RicochetRobotsDataset(Dataset):
         """
         Process a single node from the dataset.
 
-        Input node format: [x, y, robot_type(5), has_goal(2), walls(4), label]
+        Input node format: [x, y, robot_type(5), has_goal(2), walls(5), label]
 
         Returns:
-            features: [robot_type(5), has_goal(2), walls(4), positional_encoding(...)]
+            features: [robot_type(5), has_goal(2), walls(5), positional_encoding(...)]
             label: binary subgoal label
         """
         # Extract components
         x = int(node[0])
         y = int(node[1])
-        robot_type = node[2:7]      # already one-hot
-        has_goal = node[7:9]         # already one-hot
-        walls = node[9:13]           # already one-hot
-        label = int(node[13])
+        robot_type = node[2:7]      # already one-hot (5 dims)
+        has_goal = node[7:9]         # already one-hot (2 dims)
+        walls = node[9:14]           # already one-hot (5 dims)
+        label = int(node[14])
 
         # Encode coordinates using the positional encoding strategy
         pos_encoding = self.pos_encoder.encode(x, y, self.board_size)
@@ -166,12 +170,16 @@ class RicochetRobotsDataModule(pl.LightningDataModule):
         self.val_dataset = None
         self.test_dataset = None
 
+        # Filter out model-specific kwargs (combine_method is used by model, not encoder)
+        encoder_kwargs = {k: v for k, v in self.positional_encoding_kwargs.items()
+                         if k not in ('combine_method',)}
+
         # Compute feature dimension
         pos_encoder = create_positional_encoding(
             self.positional_encoding,
-            **self.positional_encoding_kwargs
+            **encoder_kwargs
         )
-        self._feature_dim = 11 + pos_encoder.get_encoding_dim(board_size)
+        self._feature_dim = 12 + pos_encoder.get_encoding_dim(board_size)
 
     def setup(self, stage: Optional[str] = None):
         """Set up datasets for different stages"""

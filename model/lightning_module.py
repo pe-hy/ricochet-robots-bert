@@ -27,6 +27,7 @@ class NodeClassifierLightningModule(pl.LightningModule):
         weight_decay: float = 0.01,
         warmup_epochs: int = 5,
         total_epochs: int = 100,
+        steps_per_epoch: int = 100,
         pos_weight: Optional[float] = None,
         log_predictions: bool = True,
     ):
@@ -37,21 +38,38 @@ class NodeClassifierLightningModule(pl.LightningModule):
             weight_decay: Weight decay for optimizer
             warmup_epochs: Number of epochs for linear warmup
             total_epochs: Total number of training epochs (for cosine scheduler)
+            steps_per_epoch: Number of training steps per epoch
             pos_weight: Positive class weight for imbalanced datasets (None = auto-compute)
             log_predictions: Whether to log example predictions to wandb
         """
         super().__init__()
 
-        # Save hyperparameters
-        self.save_hyperparameters(ignore=['model_config'])
-        self.model_config = model_config
+        # Save hyperparameters (convert model_config to dict for serialization)
+        self.save_hyperparameters()
+
+        # Store model config
+        if isinstance(model_config, dict):
+            self.model_config = NodeClassifierConfig(**model_config)
+        else:
+            self.model_config = model_config
+            # Also save as dict in hparams for checkpoint loading
+            self.hparams['model_config'] = model_config.to_dict()
 
         # Create model
-        self.model = NodeClassifierTransformer(**model_config.to_dict())
+        self.model = NodeClassifierTransformer(**self.model_config.to_dict())
 
-        # Loss function (will set pos_weight after first batch if None)
-        self.pos_weight = pos_weight
-        self.criterion = None  # Initialize in first forward pass
+        # Loss function
+        # Initialize with default pos_weight (will be updated on first batch if None)
+        self.pos_weight_value = pos_weight
+        self.pos_weight_computed = False
+        if pos_weight is not None:
+            # Use provided pos_weight
+            self.register_buffer('pos_weight', torch.tensor([pos_weight]))
+        else:
+            # Start with 1.0, will be updated on first batch
+            self.register_buffer('pos_weight', torch.tensor([1.0]))
+
+        self.criterion = nn.BCEWithLogitsLoss(pos_weight=self.pos_weight)
 
         # Metrics for binary classification (node-level)
         self.train_accuracy = Accuracy(task='binary')
@@ -78,19 +96,15 @@ class NodeClassifierLightningModule(pl.LightningModule):
         self.log_predictions = log_predictions
 
     def _init_criterion(self, labels: torch.Tensor):
-        """Initialize loss function with appropriate pos_weight"""
-        if self.criterion is None:
-            if self.pos_weight is None:
-                # Compute pos_weight from labels
-                num_positive = labels.sum()
-                num_negative = labels.numel() - num_positive
-                pos_weight = num_negative / num_positive if num_positive > 0 else 1.0
-                self.pos_weight = pos_weight.item()
-                print(f"Auto-computed pos_weight: {self.pos_weight:.4f}")
-
-            self.criterion = nn.BCEWithLogitsLoss(
-                pos_weight=torch.tensor([self.pos_weight], device=self.device)
-            )
+        """Update pos_weight if auto-compute is enabled"""
+        if not self.pos_weight_computed and self.pos_weight_value is None:
+            # Auto-compute pos_weight from first batch
+            num_positive = labels.sum()
+            num_negative = labels.numel() - num_positive
+            computed_weight = num_negative / num_positive if num_positive > 0 else 1.0
+            self.pos_weight.fill_(computed_weight.item())
+            self.pos_weight_computed = True
+            print(f"Auto-computed pos_weight: {self.pos_weight.item():.4f}")
 
     def forward(self, features: torch.Tensor, attention_mask: Optional[torch.Tensor] = None):
         """Forward pass"""
@@ -175,9 +189,8 @@ class NodeClassifierLightningModule(pl.LightningModule):
         self.log('train/accuracy', accuracy, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log('train/exact_match', exact_match_mean, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
 
-        # Log learning rate
-        lr = self.trainer.optimizers[0].param_groups[0]['lr']
-        self.log('train/lr', lr, on_step=True, on_epoch=False, prog_bar=False, sync_dist=True)
+        # Note: Learning rate is automatically logged by LearningRateMonitor callback
+        # as 'lr-AdamW' - no manual logging needed
 
         return loss
 
@@ -214,6 +227,7 @@ class NodeClassifierLightningModule(pl.LightningModule):
         self.log('val/f1', self.val_f1, on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
         self.log('val/auroc', self.val_auroc, on_step=False, on_epoch=True, sync_dist=True)
         self.log('val/exact_match', exact_match_mean, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log('val_exact_match', exact_match_mean, on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
 
         # Log example predictions to wandb
         if self.log_predictions and batch_idx == 0:
@@ -309,17 +323,9 @@ class NodeClassifierLightningModule(pl.LightningModule):
             weight_decay=self.hparams.weight_decay
         )
 
-        # Calculate total training steps
-        # We'll use trainer.estimated_stepping_batches if available (Lightning 1.7+)
-        # Otherwise fall back to epoch-based scheduling
-        if hasattr(self.trainer, 'estimated_stepping_batches'):
-            total_steps = self.trainer.estimated_stepping_batches
-            warmup_steps = int(total_steps * (self.hparams.warmup_epochs / self.hparams.total_epochs))
-        else:
-            # Fallback: approximate based on epochs
-            # This will be corrected on first call
-            total_steps = 1000 * self.hparams.total_epochs  # rough estimate
-            warmup_steps = 1000 * self.hparams.warmup_epochs
+        # Calculate exact training steps from config
+        total_steps = self.hparams.steps_per_epoch * self.hparams.total_epochs
+        warmup_steps = self.hparams.steps_per_epoch * self.hparams.warmup_epochs
 
         def lr_lambda(current_step):
             if current_step < warmup_steps:
@@ -336,7 +342,7 @@ class NodeClassifierLightningModule(pl.LightningModule):
             'optimizer': optimizer,
             'lr_scheduler': {
                 'scheduler': scheduler,
-                'interval': 'step',  # Update per step, not per epoch
+                'interval': 'step',
                 'frequency': 1
             }
         }

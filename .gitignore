@@ -3,7 +3,7 @@ tmp/
 checkpoints/
 !data_generation/*.py
 !data_generation/*.gitkeep
-
+*.pkl
 
 tokenizer/*
 !tokenizer/*.gitkeep

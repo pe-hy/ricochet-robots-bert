@@ -24,6 +24,9 @@ class NodeClassifierTransformer(nn.Module):
 
     The positional encoding is handled through configurable encoding strategies
     (one-hot, sinusoidal, normalized, or learned) applied to x,y coordinates.
+
+    For learned positional encodings, the model creates nn.Embedding layers
+    that learn position representations during training.
     """
 
     def __init__(
@@ -35,25 +38,65 @@ class NodeClassifierTransformer(nn.Module):
         dim_feedforward: int = 1024,
         dropout: float = 0.1,
         activation: str = "gelu",
+        positional_encoding: Optional[str] = None,
+        board_size: int = 16,
+        pos_encoding_dim: int = 0,
+        pos_combine_method: str = "concat",
     ):
         """
         Args:
-            feature_dim: Input feature dimension (11 + 2*board_size for one-hot coords)
+            feature_dim: Input feature dimension (raw tensor size)
             d_model: Transformer embedding dimension
             nhead: Number of attention heads
             num_layers: Number of transformer encoder layers
             dim_feedforward: Dimension of feedforward network
             dropout: Dropout probability
             activation: Activation function ('relu' or 'gelu')
+            positional_encoding: Type of encoding ('learned', 'onehot', etc.)
+            board_size: Board size for learned embeddings
+            pos_encoding_dim: Target dimension for learned embeddings
+            pos_combine_method: How to combine x,y embeddings ('concat', 'additive', 'joint')
         """
         super().__init__()
 
         self.feature_dim = feature_dim
         self.d_model = d_model
+        self.positional_encoding = positional_encoding
+        self.board_size = board_size
+        self.pos_encoding_dim = pos_encoding_dim
+        self.pos_combine_method = pos_combine_method
 
-        # Input projection: converts features (including one-hot positional encoding) to d_model
-        # This effectively combines feature embeddings and positional embeddings
-        self.input_projection = nn.Linear(feature_dim, d_model)
+        # For learned positional encoding, create embedding layers
+        self.use_learned_pos = positional_encoding == 'learned' and pos_encoding_dim > 0
+        if self.use_learned_pos:
+            if pos_combine_method == "joint":
+                # Single embedding for each (x,y) cell
+                num_positions = board_size * board_size
+                self.pos_embedding = nn.Embedding(num_positions, pos_encoding_dim)
+                self.x_embedding = None
+                self.y_embedding = None
+            else:
+                # Separate x and y embeddings
+                if pos_combine_method == "additive":
+                    # Both embeddings have full dimension (will be added)
+                    embed_dim_per_coord = pos_encoding_dim
+                else:  # concat
+                    # Split dimension between x and y (will be concatenated)
+                    embed_dim_per_coord = pos_encoding_dim // 2
+                self.x_embedding = nn.Embedding(board_size, embed_dim_per_coord)
+                self.y_embedding = nn.Embedding(board_size, embed_dim_per_coord)
+                self.pos_embedding = None
+
+            # Effective feature dim: original features minus 2 indices plus learned embeddings
+            effective_feature_dim = feature_dim - 2 + pos_encoding_dim
+        else:
+            self.x_embedding = None
+            self.y_embedding = None
+            self.pos_embedding = None
+            effective_feature_dim = feature_dim
+
+        # Input projection: converts features to d_model
+        self.input_projection = nn.Linear(effective_feature_dim, d_model)
 
         # Transformer encoder
         encoder_layer = nn.TransformerEncoderLayer(
@@ -98,14 +141,40 @@ class NodeClassifierTransformer(nn.Module):
         Forward pass.
 
         Args:
-            features: [batch_size, num_nodes, feature_dim] - node features with one-hot positions
+            features: [batch_size, num_nodes, feature_dim] - node features
             attention_mask: [batch_size, num_nodes] - mask for padding (optional)
 
         Returns:
             logits: [batch_size, num_nodes, 1] - binary classification logits
         """
+        # Apply learned positional embeddings if configured
+        if self.use_learned_pos:
+            # Split features: [other_features, x_idx, y_idx]
+            other_features = features[..., :-2]  # [batch, nodes, feature_dim-2]
+            pos_indices = features[..., -2:].long()  # [batch, nodes, 2]
+            x_idx = pos_indices[..., 0]  # [batch, nodes]
+            y_idx = pos_indices[..., 1]  # [batch, nodes]
+
+            # Get position embeddings based on combine method
+            if self.pos_combine_method == "joint":
+                # Flatten (x, y) to single index
+                flat_idx = y_idx * self.board_size + x_idx  # [batch, nodes]
+                pos_embed = self.pos_embedding(flat_idx)  # [batch, nodes, pos_encoding_dim]
+            elif self.pos_combine_method == "additive":
+                # Add x and y embeddings
+                x_embed = self.x_embedding(x_idx)  # [batch, nodes, pos_encoding_dim]
+                y_embed = self.y_embedding(y_idx)  # [batch, nodes, pos_encoding_dim]
+                pos_embed = x_embed + y_embed  # [batch, nodes, pos_encoding_dim]
+            else:  # concat
+                # Concatenate x and y embeddings
+                x_embed = self.x_embedding(x_idx)  # [batch, nodes, pos_encoding_dim/2]
+                y_embed = self.y_embedding(y_idx)  # [batch, nodes, pos_encoding_dim/2]
+                pos_embed = torch.cat([x_embed, y_embed], dim=-1)  # [batch, nodes, pos_encoding_dim]
+
+            # Combine with other features
+            features = torch.cat([other_features, pos_embed], dim=-1)
+
         # Project input features to d_model
-        # This combines all features including one-hot positional encodings
         x = self.input_projection(features)  # [batch, num_nodes, d_model]
 
         # Create attention mask if provided
@@ -153,6 +222,10 @@ class NodeClassifierConfig:
         dim_feedforward: int = 1024,
         dropout: float = 0.1,
         activation: str = "gelu",
+        positional_encoding: Optional[str] = None,
+        board_size: int = 16,
+        pos_encoding_dim: int = 0,
+        pos_combine_method: str = "concat",
     ):
         self.feature_dim = feature_dim
         self.d_model = d_model
@@ -161,6 +234,10 @@ class NodeClassifierConfig:
         self.dim_feedforward = dim_feedforward
         self.dropout = dropout
         self.activation = activation
+        self.positional_encoding = positional_encoding
+        self.board_size = board_size
+        self.pos_encoding_dim = pos_encoding_dim
+        self.pos_combine_method = pos_combine_method
 
     def to_dict(self):
         return {
@@ -171,6 +248,10 @@ class NodeClassifierConfig:
             "dim_feedforward": self.dim_feedforward,
             "dropout": self.dropout,
             "activation": self.activation,
+            "positional_encoding": self.positional_encoding,
+            "board_size": self.board_size,
+            "pos_encoding_dim": self.pos_encoding_dim,
+            "pos_combine_method": self.pos_combine_method,
         }
 
 

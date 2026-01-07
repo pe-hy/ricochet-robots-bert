@@ -13,7 +13,7 @@ seed: 42
 # Weights & Biases configuration
 wandb:
   project: ricochet-robots-node-classifier
-  name: null  # Auto-generate name if null
+  name: "d${model.d_model}_l${model.num_layers}_h${model.nhead}_n${get_num_examples:${data.train_path}}_lr${training.max_lr}_bs${data.batch_size}_e${data.positional_encoding}"
   save_dir: ./tmp/wandb_logs
   log_model: false
 
@@ -21,7 +21,7 @@ wandb:
 data:
   train_path: data/ricochet_data/dataset.json
   board_size: 16
-  batch_size: 128
+  batch_size: 256
   num_workers: 4
 
   # Split configuration (absolute numbers)
@@ -29,14 +29,14 @@ data:
   test_size: 256     # Number of examples for test (0 = no test set)
 
   # Positional encoding
-  positional_encoding: onehot  # Options: onehot, sinusoidal, normalized, learned
-  positional_encoding_kwargs: {}
+  positional_encoding: learned  # Options: onehot, sinusoidal, normalized, learned
+  positional_encoding_kwargs: {encoding_dim: 128, combine_method: joint}
 
 # Model architecture
 model:
   d_model: 256
-  nhead: 8
-  num_layers: 6
+  nhead: 16
+  num_layers: 12
   dim_feedforward: 1024
   dropout: 0.1
   activation: gelu
@@ -44,7 +44,7 @@ model:
 # Training configuration
 training:
   max_lr: 0.001
-  weight_decay: 0.01
+  weight_decay: 0.1
   warmup_epochs: 20
   pos_weight: 1  # Equal weighting, no auto-computation (null would auto-compute)
   log_predictions: true
@@ -65,19 +65,27 @@ trainer:
 
 # Checkpoint configuration
 checkpoint:
-  dirpath: ./tmp/checkpoints
-  filename: robots_classifier-{epoch:02d}-{val/exact_match:.4f}
-  monitor: val/exact_match
+  dirpath: ./tmp/checkpoints/d${model.d_model}_l${model.num_layers}_h${model.nhead}_n${get_num_examples:${data.train_path}}_lr${training.max_lr}_bs${data.batch_size}e${data.positional_encoding}
+  filename: "epoch={epoch}-{val_exact_match:.4f}"
+  monitor: val_exact_match
   mode: max
   save_top_k: 3
   save_last: true
+  auto_insert_metric_name: false
 
 # Early stopping
 early_stopping:
   enabled: false
-  monitor: val/exact_match
+  monitor: val_exact_match
   patience: 10
   mode: max
+
+# Test set evaluation
+test_evaluation:
+  enabled: true
+  test_data_path: data/ricochet_data/test.json
+  output_path: ./tmp/predictions/test_predictions.pkl
+  threshold: 0.5
 
 # Hydra configuration
 hydra:

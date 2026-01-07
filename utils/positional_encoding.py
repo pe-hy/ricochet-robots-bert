@@ -85,29 +85,43 @@ class LearnedPositionalEncoding(PositionalEncoding):
     Learned embedding for (x, y) coordinates.
 
     Uses a lookup table to learn position embeddings.
-    Requires a PyTorch nn.Embedding module.
+    The actual nn.Embedding is applied by the model during forward pass.
+
+    This encoder returns raw [x, y] indices, and the model creates
+    nn.Embedding layers to learn position representations.
     """
 
-    def __init__(self, embedding_dim: int = 64):
+    def __init__(self, encoding_dim: int = 64):
         """
         Args:
-            embedding_dim: Dimension of learned position embeddings
+            encoding_dim: Dimension of learned position embeddings (total for x + y)
         """
-        self.embedding_dim = embedding_dim
+        self.encoding_dim = encoding_dim
 
     def encode(self, x: int, y: int, board_size: int) -> np.ndarray:
         """
-        For learned embeddings, we return the index instead of the encoding.
-        The actual embedding is applied by the model.
+        For learned embeddings, we return the indices for the model to embed.
 
         Returns:
-            Position index as [x, y]
+            Position indices as [x, y] (float for tensor compatibility)
         """
         return np.array([x, y], dtype=np.float32)
 
     def get_encoding_dim(self, board_size: int) -> int:
-        """Return 2 for (x, y) indices - embedding is done by the model"""
+        """
+        Return 2 for raw (x, y) indices in the tensor.
+        The model will expand these to encoding_dim via nn.Embedding.
+        """
         return 2
+
+    def get_learned_embedding_dim(self) -> int:
+        """Return the target embedding dimension (used by model)."""
+        return self.encoding_dim
+
+    @property
+    def is_learned(self) -> bool:
+        """Indicate this requires model-side embedding."""
+        return True
 
 
 class SinusoidalPositionalEncoding(PositionalEncoding):
