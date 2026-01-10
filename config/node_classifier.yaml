@@ -19,7 +19,7 @@ wandb:
 
 # Data configuration
 data:
-  train_path: data/ricochet_data/dataset.json
+  train_path: data/ricochet_data/dataset_multiple_graphs.json
   board_size: 16
   batch_size: 256
   num_workers: 4
@@ -29,7 +29,7 @@ data:
   test_size: 256     # Number of examples for test (0 = no test set)
 
   # Positional encoding
-  positional_encoding: learned  # Options: onehot, sinusoidal, normalized, learned
+  positional_encoding: onehot  # Options: onehot, sinusoidal, normalized, learned
   positional_encoding_kwargs: {encoding_dim: 128, combine_method: joint}
 
 # Model architecture
@@ -80,12 +80,18 @@ early_stopping:
   patience: 10
   mode: max
 
-# Test set evaluation
+# Test set evaluation (supports multiple test sets)
 test_evaluation:
   enabled: true
-  test_data_path: data/ricochet_data/test.json
-  output_path: ./tmp/predictions/test_predictions.pkl
   threshold: 0.5
+  # List of test sets to evaluate
+  test_sets:
+    - name: iid
+      path: data/ricochet_data/test_multiple_iid.json
+      output_path: ./tmp/predictions/test_iid_predictions.pkl
+    - name: ood
+      path: data/ricochet_data/test_multiple_ood.json
+      output_path: ./tmp/predictions/test_ood_predictions.pkl
 
 # Hydra configuration
 hydra:

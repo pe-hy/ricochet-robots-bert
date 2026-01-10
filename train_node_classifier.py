@@ -54,7 +54,8 @@ def evaluate_on_test_set(
     threshold: float = 0.5,
     positional_encoding: str = 'onehot',
     positional_encoding_kwargs: dict = None,
-    log_to_wandb: bool = True
+    log_to_wandb: bool = True,
+    test_set_name: str = None
 ):
     """
     Evaluate the best model on held-out test set and save predictions.
@@ -68,12 +69,14 @@ def evaluate_on_test_set(
         positional_encoding: Type of positional encoding used during training
         positional_encoding_kwargs: Kwargs for positional encoding
         log_to_wandb: Whether to log metrics to WandB
+        test_set_name: Name of the test set (for logging)
 
     Returns:
         Dictionary of metrics
     """
+    display_name = f" ({test_set_name})" if test_set_name else ""
     print("\n" + "=" * 80)
-    print("EVALUATING ON HELD-OUT TEST SET")
+    print(f"EVALUATING ON HELD-OUT TEST SET{display_name}")
     print("=" * 80)
     print(f"Checkpoint: {checkpoint_path}")
     print(f"Test data: {test_data_path}")
@@ -176,19 +179,21 @@ def evaluate_on_test_set(
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
     exact_match_rate = exact_matches / len(examples) if len(examples) > 0 else 0
 
+    # Build metric prefix based on test set name
+    metric_prefix = f"test_{test_set_name}" if test_set_name else "test_final"
     metrics = {
-        'test_final/accuracy': accuracy,
-        'test_final/precision': precision,
-        'test_final/recall': recall,
-        'test_final/f1': f1,
-        'test_final/exact_match': exact_match_rate,
-        'test_final/exact_matches': exact_matches,
-        'test_final/total_examples': len(examples)
+        f'{metric_prefix}/accuracy': accuracy,
+        f'{metric_prefix}/precision': precision,
+        f'{metric_prefix}/recall': recall,
+        f'{metric_prefix}/f1': f1,
+        f'{metric_prefix}/exact_match': exact_match_rate,
+        f'{metric_prefix}/exact_matches': exact_matches,
+        f'{metric_prefix}/total_examples': len(examples)
     }
 
     # Print metrics
     print("\n" + "=" * 80)
-    print("HELD-OUT TEST SET RESULTS")
+    print(f"HELD-OUT TEST SET RESULTS{display_name}")
     print("=" * 80)
     print(f"Accuracy:       {accuracy:.4f}")
     print(f"Precision:      {precision:.4f}")
@@ -390,20 +395,23 @@ def main(cfg: DictConfig) -> None:
         print("\nTesting model...")
         trainer.test(lightning_module, datamodule=data_module)
 
-    # Evaluate on held-out test set and save predictions
+    # Evaluate on held-out test set(s) and save predictions
     if cfg.test_evaluation.enabled:
         # Get best checkpoint path
         best_checkpoint = checkpoint_callback.best_model_path
         if best_checkpoint and Path(best_checkpoint).exists():
-            evaluate_on_test_set(
-                checkpoint_path=best_checkpoint,
-                test_data_path=cfg.test_evaluation.test_data_path,
-                output_path=cfg.test_evaluation.output_path,
-                board_size=cfg.data.board_size,
-                threshold=cfg.test_evaluation.threshold,
-                positional_encoding=cfg.data.positional_encoding,
-                positional_encoding_kwargs=OmegaConf.to_container(cfg.data.positional_encoding_kwargs)
-            )
+            # Iterate over all test sets
+            for test_set in cfg.test_evaluation.test_sets:
+                evaluate_on_test_set(
+                    checkpoint_path=best_checkpoint,
+                    test_data_path=test_set.path,
+                    output_path=test_set.output_path,
+                    board_size=cfg.data.board_size,
+                    threshold=cfg.test_evaluation.threshold,
+                    positional_encoding=cfg.data.positional_encoding,
+                    positional_encoding_kwargs=OmegaConf.to_container(cfg.data.positional_encoding_kwargs),
+                    test_set_name=test_set.name
+                )
         else:
             print(f"WARNING: Best checkpoint not found. Skipping test set evaluation.")
 
