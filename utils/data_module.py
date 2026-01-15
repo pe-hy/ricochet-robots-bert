@@ -68,7 +68,8 @@ class RicochetRobotsDataset(Dataset):
         """
         Process a single node from the dataset.
 
-        Input node format: [x, y, robot_type(5), has_goal(2), walls(5), label]
+        Input node format (15 features): [x, y, robot_type(5), has_goal(2), walls(5), label]
+        Input node format (20 features): [x, y, robot_type(5), has_goal(2), walls(5), extra(5), label]
 
         Returns:
             features: [robot_type(5), has_goal(2), walls(5), positional_encoding(...)]
@@ -80,7 +81,8 @@ class RicochetRobotsDataset(Dataset):
         robot_type = node[2:7]      # already one-hot (5 dims)
         has_goal = node[7:9]         # already one-hot (2 dims)
         walls = node[9:14]           # already one-hot (5 dims)
-        label = int(node[14])
+        # Label is at the last position (index 14 for old format, 19 for new format)
+        label = int(node[-1])
 
         # Encode coordinates using the positional encoding strategy
         pos_encoding = self.pos_encoder.encode(x, y, self.board_size)

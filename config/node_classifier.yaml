@@ -26,11 +26,12 @@ data:
 
   # Split configuration (absolute numbers)
   val_size: 256      # Number of examples for validation
-  test_size: 256     # Number of examples for test (0 = no test set)
+  test_size: 2048     # Number of examples for test (0 = no test set)
 
   # Positional encoding
   positional_encoding: onehot  # Options: onehot, sinusoidal, normalized, learned
-  positional_encoding_kwargs: {encoding_dim: 128, combine_method: joint}
+  positional_encoding_kwargs: {}
+  # positional_encoding_kwargs: {encoding_dim: 128, combine_method: joint}
 
 # Model architecture
 model:
@@ -45,13 +46,13 @@ model:
 training:
   max_lr: 0.001
   weight_decay: 0.1
-  warmup_epochs: 20
+  warmup_epochs: 50
   pos_weight: 1  # Equal weighting, no auto-computation (null would auto-compute)
   log_predictions: true
 
 # PyTorch Lightning Trainer
 trainer:
-  epochs: 100
+  epochs: 200
   accelerator: auto
   devices: auto
   strategy: auto
