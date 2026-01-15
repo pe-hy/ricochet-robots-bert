@@ -6,6 +6,7 @@
 
 defaults:
   - _self_
+  - task: subgoal_label
 
 # Random seed for reproducibility
 seed: 42
@@ -13,7 +14,7 @@ seed: 42
 # Weights & Biases configuration
 wandb:
   project: ricochet-robots-node-classifier
-  name: "d${model.d_model}_l${model.num_layers}_h${model.nhead}_n${get_num_examples:${data.train_path}}_lr${training.max_lr}_bs${data.batch_size}_e${data.positional_encoding}"
+  name: "${task.name}_d${model.d_model}_l${model.num_layers}_h${model.nhead}_lr${training.max_lr}_e${data.positional_encoding}"
   save_dir: ./tmp/wandb_logs
   log_model: false
 
@@ -36,23 +37,23 @@ data:
 # Model architecture
 model:
   d_model: 256
-  nhead: 16
-  num_layers: 12
+  nhead: 8
+  num_layers: 16
   dim_feedforward: 1024
   dropout: 0.1
   activation: gelu
 
 # Training configuration
 training:
-  max_lr: 0.001
+  max_lr: 0.005
   weight_decay: 0.1
-  warmup_epochs: 50
+  warmup_epochs: 20
   pos_weight: 1  # Equal weighting, no auto-computation (null would auto-compute)
   log_predictions: true
 
 # PyTorch Lightning Trainer
 trainer:
-  epochs: 200
+  epochs: 100
   accelerator: auto
   devices: auto
   strategy: auto

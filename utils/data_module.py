@@ -34,7 +34,8 @@ class RicochetRobotsDataset(Dataset):
         data_path: str,
         board_size: int = 16,
         positional_encoding: str = 'onehot',
-        positional_encoding_kwargs: Optional[Dict] = None
+        positional_encoding_kwargs: Optional[Dict] = None,
+        task_config: Optional[Dict] = None
     ):
         """
         Args:
@@ -42,9 +43,11 @@ class RicochetRobotsDataset(Dataset):
             board_size: Size of the board (default 16 for 16x16)
             positional_encoding: Type of positional encoding ('onehot', 'sinusoidal', 'normalized', 'learned')
             positional_encoding_kwargs: Additional kwargs for positional encoding
+            task_config: Task configuration (target_index, include_goal_features)
         """
         self.board_size = board_size
         self.positional_encoding_kwargs = positional_encoding_kwargs or {}
+        self.task_config = task_config or {'target_index': 19, 'include_goal_features': [14, 15, 16, 17, 18]}
 
         # Filter out model-specific kwargs (combine_method is used by model, not encoder)
         encoder_kwargs = {k: v for k, v in self.positional_encoding_kwargs.items()
@@ -64,38 +67,56 @@ class RicochetRobotsDataset(Dataset):
             data = json.load(f)
         return data['examples']
 
-    def _process_node(self, node: List) -> Tuple[np.ndarray, int]:
+    def _process_node(self, node: List) -> Tuple[np.ndarray, float]:
         """
         Process a single node from the dataset.
 
         Input node format (15 features): [x, y, robot_type(5), has_goal(2), walls(5), label]
-        Input node format (20 features): [x, y, robot_type(5), has_goal(2), walls(5), extra(5), label]
+        Input node format (20 features): [x, y, robot_type(5), has_goal(2), walls(5),
+                                          helper1_goal_pos, helper2_goal_pos, helper3_goal_pos,
+                                          helper_aggregate_goal_pos, target_goal_pos, label]
 
         Returns:
-            features: [robot_type(5), has_goal(2), walls(5), positional_encoding(...)]
-            label: binary subgoal label
+            features: [robot_type(5), has_goal(2), walls(5), goal_features(?), positional_encoding(...)]
+            target: target value (binary or continuous)
         """
-        # Extract components
+        # Extract coordinates
         x = int(node[0])
         y = int(node[1])
-        robot_type = node[2:7]      # already one-hot (5 dims)
-        has_goal = node[7:9]         # already one-hot (2 dims)
-        walls = node[9:14]           # already one-hot (5 dims)
-        # Label is at the last position (index 14 for old format, 19 for new format)
-        label = int(node[-1])
+
+        # Extract base features
+        robot_type = node[2:7]      # 5 dims
+        has_goal = node[7:9]         # 2 dims
+        walls = node[9:14]           # 5 dims
+
+        # Handle goal position features based on task config
+        goal_features = []
+        if len(node) == 20:  # New format with goal features
+            # Include specified goal features
+            include_indices = self.task_config.get('include_goal_features', [])
+            for idx in include_indices:
+                goal_features.append(node[idx])
+
+        # Extract target based on task config
+        target_index = self.task_config.get('target_index', -1)
+        if len(node) == 20:
+            target = float(node[target_index])
+        else:
+            # Old format - only has subgoal_label at index 14
+            target = float(node[14])
 
         # Encode coordinates using the positional encoding strategy
         pos_encoding = self.pos_encoder.encode(x, y, self.board_size)
 
         # Concatenate all features
-        features = np.concatenate([
-            robot_type,
-            has_goal,
-            walls,
-            pos_encoding
-        ]).astype(np.float32)
+        feature_parts = [robot_type, has_goal, walls]
+        if len(goal_features) > 0:
+            feature_parts.append(goal_features)
+        feature_parts.append(pos_encoding)
 
-        return features, label
+        features = np.concatenate(feature_parts).astype(np.float32)
+
+        return features, target
 
     def __len__(self) -> int:
         return len(self.data)
@@ -145,7 +166,8 @@ class RicochetRobotsDataModule(pl.LightningDataModule):
         val_size: int = 16,
         test_size: int = 0,
         positional_encoding: str = 'onehot',
-        positional_encoding_kwargs: Optional[Dict] = None
+        positional_encoding_kwargs: Optional[Dict] = None,
+        task_config: Optional[Dict] = None
     ):
         """
         Args:
@@ -157,6 +179,7 @@ class RicochetRobotsDataModule(pl.LightningDataModule):
             test_size: Number of examples for test set (0 = no test set)
             positional_encoding: Type of positional encoding ('onehot', 'sinusoidal', 'normalized', 'learned')
             positional_encoding_kwargs: Additional kwargs for positional encoding
+            task_config: Task configuration (target_index, include_goal_features)
         """
         super().__init__()
         self.train_path = train_path
@@ -167,6 +190,7 @@ class RicochetRobotsDataModule(pl.LightningDataModule):
         self.test_size = test_size
         self.positional_encoding = positional_encoding
         self.positional_encoding_kwargs = positional_encoding_kwargs or {}
+        self.task_config = task_config or {'target_index': 19, 'include_goal_features': [14, 15, 16, 17, 18]}
 
         self.train_dataset = None
         self.val_dataset = None
@@ -181,7 +205,10 @@ class RicochetRobotsDataModule(pl.LightningDataModule):
             self.positional_encoding,
             **encoder_kwargs
         )
-        self._feature_dim = 12 + pos_encoder.get_encoding_dim(board_size)
+        # Base features: robot_type(5) + has_goal(2) + walls(5) = 12
+        # + goal features (configurable) + positional encoding
+        num_goal_features = len(self.task_config.get('include_goal_features', []))
+        self._feature_dim = 12 + num_goal_features + pos_encoder.get_encoding_dim(board_size)
 
     def setup(self, stage: Optional[str] = None):
         """Set up datasets for different stages"""
@@ -192,7 +219,8 @@ class RicochetRobotsDataModule(pl.LightningDataModule):
                 self.train_path,
                 board_size=self.board_size,
                 positional_encoding=self.positional_encoding,
-                positional_encoding_kwargs=self.positional_encoding_kwargs
+                positional_encoding_kwargs=self.positional_encoding_kwargs,
+                task_config=self.task_config
             )
 
             total_size = len(full_dataset)

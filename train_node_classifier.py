@@ -55,7 +55,8 @@ def evaluate_on_test_set(
     positional_encoding: str = 'onehot',
     positional_encoding_kwargs: dict = None,
     log_to_wandb: bool = True,
-    test_set_name: str = None
+    test_set_name: str = None,
+    task_config: dict = None
 ):
     """
     Evaluate the best model on held-out test set and save predictions.
@@ -99,7 +100,8 @@ def evaluate_on_test_set(
         data_path=test_data_path,
         board_size=board_size,
         positional_encoding=positional_encoding,
-        positional_encoding_kwargs=positional_encoding_kwargs or {}
+        positional_encoding_kwargs=positional_encoding_kwargs or {},
+        task_config=task_config or {'target_index': 19, 'include_goal_features': [14, 15, 16, 17, 18]}
     )
 
     print(f"Test dataset size: {len(test_dataset)} examples")
@@ -247,6 +249,10 @@ def main(cfg: DictConfig) -> None:
     )
 
     # Create data module
+    task_config = {
+        'target_index': cfg.task.target_index,
+        'include_goal_features': cfg.task.include_goal_features
+    }
     data_module = RicochetRobotsDataModule(
         train_path=cfg.data.train_path,
         board_size=cfg.data.board_size,
@@ -255,7 +261,8 @@ def main(cfg: DictConfig) -> None:
         val_size=cfg.data.val_size,
         test_size=cfg.data.test_size,
         positional_encoding=cfg.data.positional_encoding,
-        positional_encoding_kwargs=OmegaConf.to_container(cfg.data.positional_encoding_kwargs)
+        positional_encoding_kwargs=OmegaConf.to_container(cfg.data.positional_encoding_kwargs),
+        task_config=task_config
     )
 
     # Calculate steps per epoch from dataset size
@@ -410,7 +417,8 @@ def main(cfg: DictConfig) -> None:
                     threshold=cfg.test_evaluation.threshold,
                     positional_encoding=cfg.data.positional_encoding,
                     positional_encoding_kwargs=OmegaConf.to_container(cfg.data.positional_encoding_kwargs),
-                    test_set_name=test_set.name
+                    test_set_name=test_set.name,
+                    task_config=task_config
                 )
         else:
             print(f"WARNING: Best checkpoint not found. Skipping test set evaluation.")

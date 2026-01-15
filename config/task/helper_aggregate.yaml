@@ -1,0 +1,15 @@
+# @package task
+
+# Task: Predict helper_pos_aggregate_goal_pos (binary classification)
+name: helper_aggregate
+prediction_type: binary_classification
+
+# Feature indices in the 20-feature format:
+# [x(0), y(1), robot_type(2-6), has_goal(7-8), walls(9-13),
+#  helper1_goal_pos(14), helper2_goal_pos(15), helper3_goal_pos(16),
+#  helper_aggregate_goal_pos(17), target_goal_pos(18), subgoal_label(19)]
+
+target_index: 17  # helper_aggregate_goal_pos
+
+# Include all goal features except the one we're predicting
+include_goal_features: [14, 15, 16, 18, 19]
