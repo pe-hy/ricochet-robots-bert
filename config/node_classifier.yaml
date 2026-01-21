@@ -27,7 +27,7 @@ data:
 
   # Split configuration (absolute numbers)
   val_size: 256      # Number of examples for validation
-  test_size: 2048     # Number of examples for test (0 = no test set)
+  test_size: 1024     # Number of examples for test (0 = no test set)
 
   # Positional encoding
   positional_encoding: onehot  # Options: onehot, sinusoidal, normalized, learned
