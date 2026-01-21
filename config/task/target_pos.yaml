@@ -11,5 +11,5 @@ prediction_type: binary_classification
 
 target_index: 18  # target_goal_pos
 
-# Include all goal features except the one we're predicting
-include_goal_features: [14, 15, 16, 17, 19]
+# Use 14 base features + subgoal_label + helper_aggregate
+include_goal_features: [19, 17]

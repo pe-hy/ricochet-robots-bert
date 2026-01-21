@@ -101,7 +101,7 @@ def evaluate_on_test_set(
         board_size=board_size,
         positional_encoding=positional_encoding,
         positional_encoding_kwargs=positional_encoding_kwargs or {},
-        task_config=task_config or {'target_index': 19, 'include_goal_features': [14, 15, 16, 17, 18]}
+        task_config=task_config or {'target_index': 19, 'include_goal_features': []}
     )
 
     print(f"Test dataset size: {len(test_dataset)} examples")
@@ -123,7 +123,7 @@ def evaluate_on_test_set(
             labels = sample['labels']      # [num_nodes]
 
             # Get scored_subgoals from the raw data
-            raw_example = test_dataset.data[idx]
+            raw_example = test_dataset._load_example(idx)
             scored_subgoals = raw_example.get('scored_subgoals', {})
 
             # Convert to batch format
@@ -266,9 +266,18 @@ def main(cfg: DictConfig) -> None:
     )
 
     # Calculate steps per epoch from dataset size
-    with open(cfg.data.train_path, 'r') as f:
-        data = json.load(f)
-    total_examples = data['metadata']['num_examples']
+    if cfg.data.train_path.endswith('.jsonl'):
+        # JSONL format - first line contains metadata
+        with open(cfg.data.train_path, 'r') as f:
+            metadata_line = f.readline()
+            metadata = json.loads(metadata_line)
+            total_examples = metadata['metadata']['num_examples']
+    else:
+        # Original JSON format - read metadata
+        with open(cfg.data.train_path, 'r') as f:
+            data = json.load(f)
+        total_examples = data['metadata']['num_examples']
+
     train_size = total_examples - cfg.data.val_size - cfg.data.test_size
     steps_per_epoch = train_size // cfg.data.batch_size
 

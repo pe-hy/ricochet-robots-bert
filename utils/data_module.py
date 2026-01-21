@@ -11,6 +11,7 @@ import pytorch_lightning as pl
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 import numpy as np
+import linecache
 
 from utils.positional_encoding import create_positional_encoding, PositionalEncoding
 
@@ -47,7 +48,7 @@ class RicochetRobotsDataset(Dataset):
         """
         self.board_size = board_size
         self.positional_encoding_kwargs = positional_encoding_kwargs or {}
-        self.task_config = task_config or {'target_index': 19, 'include_goal_features': [14, 15, 16, 17, 18]}
+        self.task_config = task_config or {'target_index': 19, 'include_goal_features': []}
 
         # Filter out model-specific kwargs (combine_method is used by model, not encoder)
         encoder_kwargs = {k: v for k, v in self.positional_encoding_kwargs.items()
@@ -59,13 +60,20 @@ class RicochetRobotsDataset(Dataset):
             **encoder_kwargs
         )
 
-        self.data = self._load_data(data_path)
+        self.data_path = data_path
+        self._length = self._count_examples(data_path)
 
-    def _load_data(self, data_path: str) -> List[Dict]:
-        """Load and parse JSON data"""
-        with open(data_path, 'r') as f:
-            data = json.load(f)
-        return data['examples']
+    def _count_examples(self, data_path: str) -> int:
+        """Count number of examples without loading into memory"""
+        if data_path.endswith('.jsonl'):
+            # JSONL format - one example per line (first line is metadata)
+            with open(data_path, 'r') as f:
+                return sum(1 for _ in f) - 1  # Subtract 1 for metadata line
+        else:
+            # Original JSON format - load only to count
+            with open(data_path, 'r') as f:
+                data = json.load(f)
+            return len(data['examples'])
 
     def _process_node(self, node: List) -> Tuple[np.ndarray, float]:
         """
@@ -119,7 +127,21 @@ class RicochetRobotsDataset(Dataset):
         return features, target
 
     def __len__(self) -> int:
-        return len(self.data)
+        return self._length
+
+    def _load_example(self, idx: int) -> Dict:
+        """Load a single example lazily"""
+        if self.data_path.endswith('.jsonl'):
+            # JSONL format - use linecache for efficient line reading
+            # Line 1 is metadata, examples start at line 2
+            line = linecache.getline(self.data_path, idx + 2)
+            return json.loads(line)
+        else:
+            # Original JSON format - fallback to loading full file
+            # This is slower but maintains compatibility
+            with open(self.data_path, 'r') as f:
+                data = json.load(f)
+            return data['examples'][idx]
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         """
@@ -129,7 +151,7 @@ class RicochetRobotsDataset(Dataset):
                 - 'labels': [num_nodes] - binary labels
                 - 'example_id': scalar - example identifier
         """
-        example = self.data[idx]
+        example = self._load_example(idx)
         nodes = example['nodes']
 
         # Process all nodes
@@ -190,7 +212,7 @@ class RicochetRobotsDataModule(pl.LightningDataModule):
         self.test_size = test_size
         self.positional_encoding = positional_encoding
         self.positional_encoding_kwargs = positional_encoding_kwargs or {}
-        self.task_config = task_config or {'target_index': 19, 'include_goal_features': [14, 15, 16, 17, 18]}
+        self.task_config = task_config or {'target_index': 19, 'include_goal_features': []}
 
         self.train_dataset = None
         self.val_dataset = None

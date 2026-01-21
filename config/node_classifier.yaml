@@ -20,7 +20,7 @@ wandb:
 
 # Data configuration
 data:
-  train_path: data/ricochet_data/dataset_multiple_graphs.json
+  train_path: data/ricochet_data/dataset_multiple_graphs.jsonl
   board_size: 16
   batch_size: 256
   num_workers: 4

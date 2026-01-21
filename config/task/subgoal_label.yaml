@@ -11,5 +11,5 @@ prediction_type: binary_classification
 
 target_index: 19  # subgoal_label
 
-# Include all helper/target goal position features as input
-include_goal_features: [14, 15, 16, 17, 18]
+# Only use the 14 base features (no goal position features)
+include_goal_features: []
