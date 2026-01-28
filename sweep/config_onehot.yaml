@@ -1,6 +1,6 @@
 # WandB Sweep Configuration - ONEHOT positional encoding only
 program: sweep/train.py
-project: ricochet-robots-node-classifier-onehot
+project: ricochet-robots-node-classifier-onehot-helper-aggregate
 method: bayes
 
 metric:
@@ -74,4 +74,4 @@ parameters:
   combine_method:
     value: joint
 
-run_cap: 250  # Half of total budget
+run_cap: 100  # Half of total budget

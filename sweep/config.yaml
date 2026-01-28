@@ -71,4 +71,4 @@ parameters:
   gradient_clip_val:
     value: 1.0            # Fixed
 
-run_cap: 500  # Total trials across all workers
+run_cap: 100  # Total trials across all workers

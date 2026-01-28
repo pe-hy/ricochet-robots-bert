@@ -1,6 +1,4 @@
-flash-attn
 litgpt>=0.5.7
-torch>=2.5.0
 lightning>=2.5.0
 transformers>=4.47.0
 datasets>=3.1.0
@@ -23,4 +21,5 @@ bitsandbytes>=0.44.0
 deepspeed>=0.15.0
 tensorboard>=2.0.0
 matplotlib>=3.8.0
-rich>=11.2.0optuna>=4.0.0
+rich>=11.2.0
+optuna>=4.0.0

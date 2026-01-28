@@ -75,4 +75,4 @@ parameters:
   checkpoint_dirpath:
     value: ./tmp/checkpoints/learned
 
-run_cap: 250  # Half of total budget
+run_cap: 100  # Half of total budget
