@@ -1,3 +1,6 @@
+*.md
+*.sh
+*.csv
 # Folders with data, models, logs...
 tmp/
 checkpoints/

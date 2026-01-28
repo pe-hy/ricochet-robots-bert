@@ -20,10 +20,10 @@ wandb:
 
 # Data configuration
 data:
-  train_path: data/ricochet_data/dataset_multiple_graphs.jsonl
+  train_path: data/dataset_multiple_graphs.jsonl
   board_size: 16
   batch_size: 256
-  num_workers: 4
+  num_workers: 0  # Single-threaded with linecache - loads 8.9GB once, then fast lookups
 
   # Split configuration (absolute numbers)
   val_size: 256      # Number of examples for validation
@@ -89,10 +89,10 @@ test_evaluation:
   # List of test sets to evaluate
   test_sets:
     - name: iid
-      path: data/ricochet_data/test_multiple_iid.json
+      path: data/test_multiple_iid.jsonl
       output_path: ./tmp/predictions/test_iid_predictions.pkl
     - name: ood
-      path: data/ricochet_data/test_multiple_ood.json
+      path: data/test_multiple_ood.jsonl
       output_path: ./tmp/predictions/test_ood_predictions.pkl
 
 # Hydra configuration

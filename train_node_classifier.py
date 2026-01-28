@@ -267,11 +267,11 @@ def main(cfg: DictConfig) -> None:
 
     # Calculate steps per epoch from dataset size
     if cfg.data.train_path.endswith('.jsonl'):
-        # JSONL format - first line contains metadata
+        # JSONL format - first line contains metadata at top level
         with open(cfg.data.train_path, 'r') as f:
             metadata_line = f.readline()
             metadata = json.loads(metadata_line)
-            total_examples = metadata['metadata']['num_examples']
+            total_examples = metadata['num_examples']  # Fixed: no nested 'metadata' key in JSONL
     else:
         # Original JSON format - read metadata
         with open(cfg.data.train_path, 'r') as f:

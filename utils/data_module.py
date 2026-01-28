@@ -83,6 +83,10 @@ class RicochetRobotsDataset(Dataset):
         Input node format (20 features): [x, y, robot_type(5), has_goal(2), walls(5),
                                           helper1_goal_pos, helper2_goal_pos, helper3_goal_pos,
                                           helper_aggregate_goal_pos, target_goal_pos, label]
+        Input node format (21 features): [x, y, robot_type(5), has_goal(2), walls(5),
+                                          helper1_goal_pos, helper2_goal_pos, helper3_goal_pos,
+                                          helper_aggregate_goal_pos, target_goal_pos,
+                                          chosen_helper, subgoal_label]
 
         Returns:
             features: [robot_type(5), has_goal(2), walls(5), goal_features(?), positional_encoding(...)]
@@ -99,7 +103,7 @@ class RicochetRobotsDataset(Dataset):
 
         # Handle goal position features based on task config
         goal_features = []
-        if len(node) == 20:  # New format with goal features
+        if len(node) >= 20:  # New format with goal features (20 or 21 features)
             # Include specified goal features
             include_indices = self.task_config.get('include_goal_features', [])
             for idx in include_indices:
@@ -107,10 +111,10 @@ class RicochetRobotsDataset(Dataset):
 
         # Extract target based on task config
         target_index = self.task_config.get('target_index', -1)
-        if len(node) == 20:
+        if len(node) >= 20:  # New format (20 or 21 features)
             target = float(node[target_index])
         else:
-            # Old format - only has subgoal_label at index 14
+            # Old format (15 features) - only has subgoal_label at index 14
             target = float(node[14])
 
         # Encode coordinates using the positional encoding strategy
