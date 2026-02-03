@@ -1,0 +1,95 @@
+# @package _global_
+
+# Hydra configuration for Multi-Task Ricochet Robots Training
+# Usage: python train_multitask.py [options]
+# Override: python train_multitask.py model.architecture=cached training.max_lr=2e-3
+
+# Random seed for reproducibility
+seed: 42
+
+# Weights & Biases configuration
+wandb:
+  project: ricochet-robots-multitask
+  name: "${model.architecture}_d${model.d_model}_l${model.num_layers}_h${model.nhead}_lr${training.max_lr}"
+  save_dir: ./tmp/wandb_logs
+  log_model: false
+
+# Data configuration
+data:
+  train_path: data/dataset_multiple_graphs.jsonl
+  board_size: 16
+  batch_size: 256
+  num_workers: 0  # Single-threaded with linecache - loads 8.9GB once, then fast lookups
+
+  # Split configuration (absolute numbers)
+  val_size: 256      # Number of examples for validation
+  test_size: 1024     # Number of examples for test (0 = no test set)
+
+  # Positional encoding
+  positional_encoding: onehot  # Options: onehot, sinusoidal, normalized, learned
+  positional_encoding_kwargs: {}
+  # For learned encoding:
+  # positional_encoding: learned
+  # pos_encoding_dim: 128
+  # pos_combine_method: concat  # Options: concat, additive, joint
+
+# Model architecture
+model:
+  # Architecture type
+  architecture: basic  # Options: basic, cached, comp, cached_comp
+
+  # Transformer hyperparameters
+  d_model: 256
+  nhead: 8
+  num_layers: 16
+  dim_feedforward: 1024
+  dropout: 0.1
+  activation: gelu
+
+  # Computation vectors (only used for 'comp' and 'cached_comp' architectures)
+  num_comp_vectors: 3
+
+# Training configuration
+training:
+  max_epochs: 100
+  max_lr: 0.005
+  weight_decay: 0.1
+  warmup_epochs: 20
+  log_predictions: true
+
+  # Task weights (optional - default: equal weights)
+  # Uncomment to weight tasks differently
+  # task_weights:
+  #   subgoal_label: 1.0
+  #   helper_aggregate: 1.0
+  #   target_pos: 1.0
+  #   chosen_helper: 1.0
+
+  # Early stopping
+  early_stopping: false
+  early_stopping_patience: 10
+
+  # Trainer settings
+  accelerator: auto
+  devices: auto
+  precision: bf16-mixed
+  log_every_n_steps: 50
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+
+# Checkpoint configuration
+checkpoint:
+  dirpath: ./tmp/checkpoints_multitask/${model.architecture}_d${model.d_model}_l${model.num_layers}
+  save_top_k: 3
+  save_final: true
+
+# Deterministic mode
+deterministic: true
+
+# Hydra configuration
+hydra:
+  run:
+    dir: ./tmp/hydra_multitask
+  sweep:
+    dir: ./tmp/hydra_multitask/sweep/
+    subdir: "sub"
