@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-Evaluate all checkpoints in a directory on test sets.
+Evaluate all checkpoints across tasks on test sets.
+
+Finds the best checkpoint for each task and evaluates on both IID and OOD test sets.
+Test data is loaded once for efficiency.
 
 Usage:
     python evaluate_all_checkpoints.py ./tmp/checkpoints --output results.csv
-    python evaluate_all_checkpoints.py ./tmp/checkpoints/learned/c2euc1c6 --test-set data/test_multiple_iid.jsonl
+    python evaluate_all_checkpoints.py ./tmp/checkpoints --test-iid data/test_multiple_iid.jsonl --test-ood data/test_multiple_ood.jsonl
 """
 
 import argparse
@@ -23,6 +26,14 @@ from model.lightning_module import NodeClassifierLightningModule
 from utils.data_module import RicochetRobotsDataModule
 
 
+# Mapping from directory names to task config names
+TASK_DIR_TO_CONFIG = {
+    'ha_onehot': 'helper_aggregate',
+    'tp_onehot': 'target_pos',
+    'ch_onehot': 'chosen_helper',
+}
+
+
 def find_checkpoints(root_dir: str, pattern: str = "*.ckpt") -> list:
     """Recursively find all checkpoint files."""
     root_path = Path(root_dir)
@@ -30,27 +41,56 @@ def find_checkpoints(root_dir: str, pattern: str = "*.ckpt") -> list:
     return sorted([str(p) for p in checkpoints])
 
 
-def evaluate_checkpoint(
-    checkpoint_path: str,
-    test_sets: list,
-    board_size: int = 16,
-    batch_size: int = 512,
-    num_workers: int = 0,
-    max_samples: int = None
-) -> dict:
+def group_checkpoints_by_task(checkpoints: list) -> dict:
     """
-    Evaluate a single checkpoint on all test sets.
+    Group checkpoints by task based on directory structure.
 
     Returns:
-        Dict with test set names as keys and metrics as values
+        Dict mapping task names to lists of checkpoint paths
     """
-    results = {'checkpoint': checkpoint_path}
+    task_checkpoints = {}
 
-    # Try to extract metadata from checkpoint path
-    path_parts = Path(checkpoint_path).parts
-    if len(path_parts) > 2:
-        results['sweep_id'] = path_parts[-3] if len(path_parts) > 3 else 'unknown'
-        results['run_id'] = path_parts[-2] if len(path_parts) > 2 else 'unknown'
+    for ckpt_path in checkpoints:
+        path_parts = Path(ckpt_path).parts
+
+        # Find task directory in path
+        task_dir = None
+        for part in path_parts:
+            if part in TASK_DIR_TO_CONFIG:
+                task_dir = part
+                break
+
+        if task_dir:
+            task_name = TASK_DIR_TO_CONFIG[task_dir]
+            if task_name not in task_checkpoints:
+                task_checkpoints[task_name] = []
+            task_checkpoints[task_name].append(ckpt_path)
+
+    return task_checkpoints
+
+
+def evaluate_checkpoint(
+    checkpoint_path: str,
+    task_name: str,
+    data_modules: dict,
+    test_set_names: list
+) -> dict:
+    """
+    Evaluate a single checkpoint on pre-loaded test data modules.
+
+    Args:
+        checkpoint_path: Path to checkpoint file
+        task_name: Name of the task (helper_aggregate, target_pos, chosen_helper)
+        data_modules: Dict mapping test set names to pre-loaded data modules
+        test_set_names: List of test set names to evaluate
+
+    Returns:
+        Dict with checkpoint info and metrics for each test set
+    """
+    results = {
+        'task': task_name,
+        'checkpoint': checkpoint_path
+    }
 
     # Extract epoch and val_em from filename
     filename = Path(checkpoint_path).stem
@@ -61,87 +101,43 @@ def evaluate_checkpoint(
         except:
             results['epoch'] = -1
 
-    if 'val_em=' in filename:
+    # Extract validation exact match from filename
+    if 'val_exact_match=' in filename or 'val_em=' in filename:
         try:
-            val_em_str = filename.split('val_em=')[1].split('-')[0].split('.ckpt')[0]
+            if 'val_exact_match=' in filename:
+                val_em_str = filename.split('val_exact_match=')[1].split('-')[0].split('.ckpt')[0]
+            else:
+                val_em_str = filename.split('val_em=')[1].split('-')[0].split('.ckpt')[0]
             results['val_em'] = float(val_em_str)
         except:
             results['val_em'] = -1.0
-
-    # Load checkpoint to extract config (don't load model yet)
-    try:
-        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-        hparams = checkpoint.get('hyper_parameters', {})
-        model_config = hparams.get('model_config', {})
-    except Exception as e:
-        print(f"  ERROR loading checkpoint: {e}")
-        return None
-
-    # Extract positional encoding config from model_config
-    positional_encoding = model_config.get('positional_encoding', 'onehot')
-    board_size_from_model = model_config.get('board_size', board_size)
-    pos_encoding_dim = model_config.get('pos_encoding_dim', 0)
-    pos_combine_method = model_config.get('pos_combine_method', 'concat')
-
-    # Store config info in results
-    results['positional_encoding'] = positional_encoding
-    results['pos_encoding_dim'] = pos_encoding_dim
-    results['pos_combine_method'] = pos_combine_method
-    results['d_model'] = model_config.get('d_model', -1)
-    results['num_layers'] = model_config.get('num_layers', -1)
-    results['nhead'] = model_config.get('nhead', -1)
-
-    # Build positional_encoding_kwargs for data module
-    if positional_encoding == 'learned':
-        pos_encoding_kwargs = {
-            'encoding_dim': pos_encoding_dim,
-            'combine_method': pos_combine_method
-        }
     else:
-        pos_encoding_kwargs = {}
+        results['val_em'] = -1.0
 
-    # Load base config for task config
-    try:
-        base_config = OmegaConf.load('config/node_classifier.yaml')
-        task_config = OmegaConf.load('config/task/subgoal_label.yaml')
-        base_config.task = task_config
-    except Exception as e:
-        print(f"  ERROR loading config: {e}")
-        return None
+    # Extract run ID from path
+    path_parts = Path(checkpoint_path).parts
+    for i, part in enumerate(path_parts):
+        if part in TASK_DIR_TO_CONFIG:
+            if i + 1 < len(path_parts):
+                results['run_id'] = path_parts[i + 1]
+            break
 
-    # Now load the model
+    # Load the model
     try:
         model = NodeClassifierLightningModule.load_from_checkpoint(checkpoint_path)
+        model.eval()
     except Exception as e:
         print(f"  ERROR loading model: {e}")
         return None
 
-    # Evaluate on each test set
-    for test_set in test_sets:
-        test_name = test_set.get('name', Path(test_set['path']).stem)
+    # Evaluate on each test set using pre-loaded data modules
+    for test_name in test_set_names:
+        if test_name not in data_modules:
+            print(f"  WARNING: Test set '{test_name}' not found in data modules")
+            continue
 
         try:
-            # Create data module
-            data_module = RicochetRobotsDataModule(
-                train_path=test_set['path'],
-                board_size=board_size_from_model,
-                batch_size=batch_size,
-                num_workers=num_workers,
-                val_size=0,
-                test_size=0,
-                positional_encoding=positional_encoding,
-                positional_encoding_kwargs=pos_encoding_kwargs,
-                task_config=OmegaConf.to_container(base_config.task, resolve=True)
-            )
-            data_module.setup()
-
-            # Limit samples if specified
-            if max_samples is not None and max_samples > 0:
-                from torch.utils.data import Subset
-                dataset = data_module.train_dataset
-                if len(dataset) > max_samples:
-                    indices = list(range(max_samples))
-                    data_module.train_dataset = Subset(dataset, indices)
+            data_module = data_modules[test_name]
 
             # Create trainer
             trainer = pl.Trainer(
@@ -168,24 +164,87 @@ def evaluate_checkpoint(
     return results
 
 
+def create_data_modules_for_task(
+    task_name: str,
+    test_sets: list,
+    board_size: int = 16,
+    batch_size: int = 512,
+    num_workers: int = 0,
+    positional_encoding: str = 'onehot'
+) -> dict:
+    """
+    Create data modules for all test sets for a specific task.
+    Data modules are loaded once and can be reused across checkpoint evaluations.
+
+    Args:
+        task_name: Name of the task (helper_aggregate, target_pos, chosen_helper)
+        test_sets: List of test set dicts with 'name' and 'path' keys
+        board_size: Board size
+        batch_size: Batch size for evaluation
+        num_workers: Number of data loader workers
+        positional_encoding: Type of positional encoding
+
+    Returns:
+        Dict mapping test set names to data modules
+    """
+    # Load task config
+    try:
+        task_config_path = f'config/task/{task_name}.yaml'
+        task_config = OmegaConf.load(task_config_path)
+    except Exception as e:
+        print(f"ERROR: Could not load task config for {task_name}: {e}")
+        return {}
+
+    data_modules = {}
+
+    for test_set in test_sets:
+        test_name = test_set['name']
+        test_path = test_set['path']
+
+        try:
+            # Create data module
+            data_module = RicochetRobotsDataModule(
+                train_path=test_path,
+                board_size=board_size,
+                batch_size=batch_size,
+                num_workers=num_workers,
+                val_size=0,
+                test_size=0,
+                positional_encoding=positional_encoding,
+                positional_encoding_kwargs={},
+                task_config=OmegaConf.to_container(task_config, resolve=True)
+            )
+            data_module.setup()
+            data_modules[test_name] = data_module
+
+        except Exception as e:
+            print(f"ERROR: Could not create data module for {test_name}: {e}")
+
+    return data_modules
+
+
 def main():
-    parser = argparse.ArgumentParser(description='Evaluate all checkpoints on test sets')
+    parser = argparse.ArgumentParser(
+        description='Evaluate all checkpoints across tasks on test sets'
+    )
     parser.add_argument('checkpoint_dir', type=str,
-                       help='Directory containing checkpoints (will search recursively)')
-    parser.add_argument('--output', type=str, default='checkpoint_results.csv',
-                       help='Output CSV file (default: checkpoint_results.csv)')
-    parser.add_argument('--test-set', type=str, action='append',
-                       help='Test set path (can specify multiple times). If not specified, uses config.')
+                       help='Root directory containing task checkpoint subdirectories')
+    parser.add_argument('--output', type=str, default='best_checkpoints.csv',
+                       help='Output CSV file for best checkpoints (default: best_checkpoints.csv)')
+    parser.add_argument('--output-all', type=str, default=None,
+                       help='Optional: Output CSV file for all checkpoint results')
+    parser.add_argument('--test-iid', type=str, default='data/test_multiple_iid.jsonl',
+                       help='IID test set path (default: data/test_multiple_iid.jsonl)')
+    parser.add_argument('--test-ood', type=str, default='data/test_multiple_ood.jsonl',
+                       help='OOD test set path (default: data/test_multiple_ood.jsonl)')
     parser.add_argument('--batch-size', type=int, default=512,
                        help='Batch size for evaluation (default: 512)')
     parser.add_argument('--num-workers', type=int, default=0,
                        help='Number of data loader workers (default: 0)')
-    parser.add_argument('--max-samples', type=int, default=None,
-                       help='Maximum samples per test set (default: None = all)')
     parser.add_argument('--pattern', type=str, default='*.ckpt',
                        help='Checkpoint filename pattern (default: *.ckpt)')
-    parser.add_argument('--limit', type=int, default=None,
-                       help='Limit number of checkpoints to evaluate (for testing)')
+    parser.add_argument('--positional-encoding', type=str, default='onehot',
+                       help='Positional encoding type (default: onehot)')
 
     args = parser.parse_args()
 
@@ -202,81 +261,131 @@ def main():
         print(f"ERROR: No checkpoints found matching pattern '{args.pattern}'")
         sys.exit(1)
 
-    print(f"Found {len(checkpoints)} checkpoints")
+    print(f"Found {len(checkpoints)} total checkpoints")
 
-    # Limit checkpoints if specified
-    if args.limit is not None:
-        checkpoints = checkpoints[:args.limit]
-        print(f"Limiting evaluation to first {args.limit} checkpoints")
+    # Group checkpoints by task
+    task_checkpoints = group_checkpoints_by_task(checkpoints)
+
+    if not task_checkpoints:
+        print("ERROR: No checkpoints found for any recognized tasks")
+        print(f"Expected task directories: {list(TASK_DIR_TO_CONFIG.keys())}")
+        sys.exit(1)
+
+    print(f"\nCheckpoints by task:")
+    for task_name, ckpts in task_checkpoints.items():
+        print(f"  {task_name}: {len(ckpts)} checkpoints")
 
     # Set up test sets
-    if args.test_set:
-        # Use specified test sets
-        test_sets = [
-            {'name': f'test{i}', 'path': path}
-            for i, path in enumerate(args.test_set)
-        ]
-    else:
-        # Use test sets from config
-        try:
-            config = OmegaConf.load('config/node_classifier.yaml')
-            test_sets = [
-                {'name': ts.name, 'path': ts.path}
-                for ts in config.test_evaluation.test_sets
-            ]
-        except Exception as e:
-            print(f"ERROR: Could not load test sets from config: {e}")
-            print("Please specify test sets using --test-set")
-            sys.exit(1)
+    test_sets = [
+        {'name': 'iid', 'path': args.test_iid},
+        {'name': 'ood', 'path': args.test_ood}
+    ]
+    test_set_names = [ts['name'] for ts in test_sets]
 
-    print(f"Test sets: {[ts['name'] for ts in test_sets]}")
+    print(f"\nTest sets: {test_set_names}")
 
-    # Evaluate all checkpoints
+    # Evaluate checkpoints for each task
     all_results = []
-    print("\nEvaluating checkpoints...")
+    best_checkpoints = []
 
-    for checkpoint_path in tqdm(checkpoints, desc="Checkpoints"):
-        print(f"\n{checkpoint_path}")
-        result = evaluate_checkpoint(
-            checkpoint_path=checkpoint_path,
+    for task_name in sorted(task_checkpoints.keys()):
+        ckpts = task_checkpoints[task_name]
+        print(f"\n{'='*70}")
+        print(f"Task: {task_name} ({len(ckpts)} checkpoints)")
+        print(f"{'='*70}")
+
+        # Load test data once for this task
+        print(f"Loading test data modules for {task_name}...")
+        data_modules = create_data_modules_for_task(
+            task_name=task_name,
             test_sets=test_sets,
+            board_size=16,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
-            max_samples=args.max_samples
+            positional_encoding=args.positional_encoding
         )
 
-        if result is not None:
-            all_results.append(result)
-            # Print key metrics
-            for test_set in test_sets:
-                test_name = test_set['name']
+        if not data_modules:
+            print(f"ERROR: Could not create data modules for {task_name}")
+            continue
+
+        print(f"Loaded {len(data_modules)} test data modules")
+
+        # Get dataset sizes
+        for test_name, dm in data_modules.items():
+            n_samples = len(dm.train_dataset)
+            print(f"  {test_name}: {n_samples} samples")
+
+        # Evaluate all checkpoints for this task
+        print(f"\nEvaluating {len(ckpts)} checkpoints...")
+        task_results = []
+
+        for checkpoint_path in tqdm(ckpts, desc=f"{task_name} checkpoints"):
+            result = evaluate_checkpoint(
+                checkpoint_path=checkpoint_path,
+                task_name=task_name,
+                data_modules=data_modules,
+                test_set_names=test_set_names
+            )
+
+            if result is not None:
+                task_results.append(result)
+                all_results.append(result)
+
+        # Find best checkpoint for this task (by validation EM)
+        if task_results:
+            df_task = pd.DataFrame(task_results)
+
+            # Sort by validation exact match
+            if 'val_em' in df_task.columns and df_task['val_em'].max() > 0:
+                df_task = df_task.sort_values('val_em', ascending=False)
+                best = df_task.iloc[0].to_dict()
+            else:
+                # If no val_em, pick first checkpoint
+                print(f"  WARNING: No validation EM found, using first checkpoint")
+                best = df_task.iloc[0].to_dict()
+
+            best_checkpoints.append(best)
+
+            # Print best checkpoint info
+            print(f"\nBest checkpoint for {task_name}:")
+            print(f"  Path: {best['checkpoint']}")
+            print(f"  Epoch: {best.get('epoch', 'N/A')}")
+            print(f"  Val EM: {best.get('val_em', -1):.4f}")
+            for test_name in test_set_names:
                 em_key = f'{test_name}_exact_match'
-                if em_key in result:
-                    print(f"  {test_name}: EM = {result[em_key]:.4f}")
+                if em_key in best:
+                    print(f"  {test_name.upper()} EM: {best[em_key]:.4f}")
 
-    # Convert to DataFrame and save
-    if all_results:
-        df = pd.DataFrame(all_results)
+    # Save results
+    print(f"\n{'='*70}")
+    print("SUMMARY")
+    print(f"{'='*70}")
 
-        # Sort by validation exact match if available
-        if 'val_em' in df.columns:
-            df = df.sort_values('val_em', ascending=False)
+    if best_checkpoints:
+        # Save best checkpoints
+        df_best = pd.DataFrame(best_checkpoints)
+        df_best.to_csv(args.output, index=False)
+        print(f"\nBest checkpoints saved to: {args.output}")
 
-        # Save to CSV
-        df.to_csv(args.output, index=False)
-        print(f"\n✓ Results saved to: {args.output}")
-        print(f"  Total checkpoints evaluated: {len(df)}")
+        # Print summary table
+        print("\nBest Checkpoints Summary:")
+        print(f"{'Task':<20} {'Val EM':<10} {'IID EM':<10} {'OOD EM':<10}")
+        print("-" * 70)
+        for _, row in df_best.iterrows():
+            task = row['task']
+            val_em = row.get('val_em', -1)
+            iid_em = row.get('iid_exact_match', -1)
+            ood_em = row.get('ood_exact_match', -1)
+            print(f"{task:<20} {val_em:<10.4f} {iid_em:<10.4f} {ood_em:<10.4f}")
 
-        # Print summary statistics
-        print("\nSummary Statistics:")
-        for col in df.columns:
-            if any(metric in col for metric in ['exact_match', 'accuracy', 'f1', 'precision', 'recall']):
-                if df[col].dtype in ['float64', 'float32', 'int64', 'int32']:
-                    print(f"  {col}:")
-                    print(f"    Mean: {df[col].mean():.4f}")
-                    print(f"    Std:  {df[col].std():.4f}")
-                    print(f"    Min:  {df[col].min():.4f}")
-                    print(f"    Max:  {df[col].max():.4f}")
+        # Save all results if requested
+        if args.output_all and all_results:
+            df_all = pd.DataFrame(all_results)
+            df_all.to_csv(args.output_all, index=False)
+            print(f"\nAll checkpoint results saved to: {args.output_all}")
+            print(f"  Total checkpoints evaluated: {len(df_all)}")
+
     else:
         print("\nERROR: No checkpoints successfully evaluated")
         sys.exit(1)

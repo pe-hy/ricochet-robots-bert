@@ -104,9 +104,15 @@ class MultiTaskLightningModule(pl.LightningModule):
         # For logging
         self.log_predictions = log_predictions
 
-    def forward(self, features: torch.Tensor, attention_mask: Optional[torch.Tensor] = None):
+    def forward(
+        self,
+        features: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        labels: Optional[Dict[str, torch.Tensor]] = None,
+        use_teacher_forcing: bool = None
+    ):
         """Forward pass"""
-        return self.model(features, attention_mask)
+        return self.model(features, attention_mask, labels=labels, use_teacher_forcing=use_teacher_forcing)
 
     def _compute_loss(
         self,
@@ -186,8 +192,8 @@ class MultiTaskLightningModule(pl.LightningModule):
         features = batch['features']  # [batch, num_nodes, feature_dim]
         labels = batch['labels']      # Dict with 4 tasks, each [batch, num_nodes]
 
-        # Forward pass
-        logits = self(features)       # Dict with 4 tasks, each [batch, num_nodes, 1]
+        # Forward pass (pass labels for teacher forcing support)
+        logits = self(features, labels=labels)       # Dict with 4 tasks, each [batch, num_nodes, 1]
 
         # Compute losses
         losses = self._compute_loss(logits, labels)
@@ -239,8 +245,8 @@ class MultiTaskLightningModule(pl.LightningModule):
         features = batch['features']
         labels = batch['labels']
 
-        # Forward pass
-        logits = self(features)
+        # Forward pass (autoregressive inference, no teacher forcing)
+        logits = self(features, use_teacher_forcing=False)
 
         # Compute losses
         losses = self._compute_loss(logits, labels)
@@ -299,6 +305,9 @@ class MultiTaskLightningModule(pl.LightningModule):
         self.log('val/exact_match_all_tasks', combined_exact_match, on_step=False, on_epoch=True,
                 prog_bar=True, sync_dist=True)
 
+        # Also log with underscore for compatibility with checkpointing
+        self.log('val_exact_match_all_tasks', combined_exact_match, on_step=False, on_epoch=True, sync_dist=True)
+
         # Log example predictions to wandb
         if self.log_predictions and batch_idx == 0:
             self._log_predictions(batch, logits)
@@ -310,8 +319,8 @@ class MultiTaskLightningModule(pl.LightningModule):
         features = batch['features']
         labels = batch['labels']
 
-        # Forward pass
-        logits = self(features)
+        # Forward pass (autoregressive inference, no teacher forcing)
+        logits = self(features, use_teacher_forcing=False)
 
         # Compute losses
         losses = self._compute_loss(logits, labels)

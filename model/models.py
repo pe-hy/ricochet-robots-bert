@@ -716,6 +716,184 @@ class CachedComputationVectorMultiTask(BaseMultiTaskTransformer):
         return outputs
 
 
+class TeacherForcingComputationVectorMultiTask(BaseMultiTaskTransformer):
+    """
+    Sequential multi-task transformer with teacher forcing and computation vectors.
+
+    During training:
+    - Uses ground truth labels from task i as input to task i+1
+    - Uses INITIAL node embeddings (before transformer processing) for the ground truth nodes
+    - Inserts GT node embedding RIGHT AFTER each label token
+
+    During inference:
+    - Uses predicted labels autoregressively
+    - Predicts task i → find positive node → get its initial embedding → feed to task i+1
+
+    Sequence structure (interleaved comp, label, GT tokens):
+        Task 1: [nodes(256), COMP1-3(3), LABEL1(1)]
+                = 260 tokens
+        Task 2: [nodes(256), COMP1-3(3), LABEL1(1), GT1(1), COMP4-6(3), LABEL2(1)]
+                = 265 tokens
+        Task 3: [nodes(256), COMP1-3(3), LABEL1(1), GT1(1), COMP4-6(3), LABEL2(1),
+                 GT2(1), COMP7-9(3), LABEL3(1)]
+                = 270 tokens
+        Task 4: [nodes(256), COMP1-3(3), LABEL1(1), GT1(1), COMP4-6(3), LABEL2(1),
+                 GT2(1), COMP7-9(3), LABEL3(1), GT3(1), COMP10-12(3), LABEL4(1)]
+                = 275 tokens
+
+    Memory consideration:
+    - 4 sequential forward passes with growing sequences: 260 + 265 + 270 + 275 = 1070 tokens
+    - Requires storing activations from all passes for backpropagation
+    - ~4x memory of single-pass architectures
+    """
+
+    def __init__(self, num_comp_vectors: int = 3, **kwargs):
+        self.num_comp_vectors = num_comp_vectors
+        super().__init__(**kwargs)
+
+        # Computation vector embeddings (num_comp_vectors per task)
+        total_comp_vectors = 4 * num_comp_vectors
+        self.comp_embeds = nn.Parameter(torch.randn(total_comp_vectors, self.d_model) * 0.02)
+
+        # Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.d_model,
+            nhead=self.nhead,
+            dim_feedforward=self.dim_feedforward,
+            dropout=self.dropout,
+            activation=self.activation,
+            batch_first=True,
+            norm_first=True
+        )
+
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=self.num_layers,
+            norm=nn.LayerNorm(self.d_model)
+        )
+
+        # Initialize weights
+        self._init_weights()
+
+    def forward(
+        self,
+        features: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        labels: Optional[Dict[str, torch.Tensor]] = None,
+        use_teacher_forcing: bool = None
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Forward pass with teacher forcing support.
+
+        Args:
+            features: [batch_size, num_nodes, feature_dim] - node features
+            attention_mask: [batch_size, num_nodes] - padding mask (optional)
+            labels: Dict with ground truth labels for teacher forcing (optional)
+                    Each value is [batch_size, num_nodes] with 0/1 labels
+            use_teacher_forcing: Override training mode behavior
+                                - None (default): use self.training
+                                - True: force teacher forcing (use labels)
+                                - False: force autoregressive (use predictions)
+
+        Returns:
+            Dict with 4 task predictions, each [batch_size, num_nodes, 1]
+        """
+        # Determine mode
+        if use_teacher_forcing is None:
+            use_teacher_forcing = self.training
+
+        if use_teacher_forcing and labels is None:
+            raise ValueError("labels must be provided when use_teacher_forcing=True")
+
+        batch_size, num_nodes = features.shape[:2]
+        device = features.device
+
+        # Apply learned positional encoding if configured
+        features = self._apply_learned_positional_encoding(features)
+
+        # Project node features
+        node_embeds = self.input_projection(features)  # [batch, num_nodes, d_model]
+
+        outputs = {}
+        gt_tokens_list = []  # Store GT tokens from previous tasks
+
+        # Process each task sequentially
+        for task_idx, task_name in enumerate(self.TASK_NAMES):
+            # Build sequence: [nodes, comp1, label1, GT1, comp2, label2, GT2, ..., comp_current, label_current]
+            sequence_parts = [node_embeds]  # Start with nodes (256)
+
+            # Add all previous tasks' comp vectors, labels, and GT tokens
+            for prev_task_idx in range(task_idx):
+                # Add comp vectors for previous task
+                comp_start = prev_task_idx * self.num_comp_vectors
+                comp_end = comp_start + self.num_comp_vectors
+                comp_vecs = self.comp_embeds[comp_start:comp_end].unsqueeze(0).expand(batch_size, -1, -1)
+                sequence_parts.append(comp_vecs)
+
+                # Add label token for previous task
+                label_vec = self.label_embeds[prev_task_idx:prev_task_idx+1].unsqueeze(0).expand(batch_size, 1, -1)
+                sequence_parts.append(label_vec)
+
+                # Add GT token for previous task
+                sequence_parts.append(gt_tokens_list[prev_task_idx])
+
+            # Add comp vectors for current task
+            comp_start = task_idx * self.num_comp_vectors
+            comp_end = comp_start + self.num_comp_vectors
+            comp_vecs = self.comp_embeds[comp_start:comp_end].unsqueeze(0).expand(batch_size, -1, -1)
+            sequence_parts.append(comp_vecs)
+
+            # Add label token for current task
+            label_vec = self.label_embeds[task_idx:task_idx+1].unsqueeze(0).expand(batch_size, 1, -1)
+            sequence_parts.append(label_vec)
+
+            # Concatenate sequence
+            sequence = torch.cat(sequence_parts, dim=1)
+            seq_len = sequence.shape[1]
+
+            # Create hybrid attention mask
+            attn_mask = self._create_hybrid_attention_mask(seq_len, num_nodes, device)
+
+            # Pass through transformer
+            encoded = self.transformer_encoder(sequence, mask=attn_mask)
+
+            # Extract label position: nodes + (comp + label + GT) * prev_tasks + comp
+            label_pos = num_nodes + (self.num_comp_vectors + 1 + 1) * task_idx + self.num_comp_vectors
+            label_embed = encoded[:, label_pos, :]  # [batch, d_model]
+
+            # Extract node embeddings
+            node_embeds_final = encoded[:, :num_nodes, :]  # [batch, num_nodes, d_model]
+
+            # Project to node predictions
+            classifier = getattr(self, f'classifier_task{task_idx+1}')
+            preds = self._label_to_node_predictions(
+                label_embed, node_embeds_final, classifier
+            )
+            outputs[task_name] = preds  # [batch, num_nodes, 1]
+
+            # Extract GT token for this task (to be used in next tasks)
+            if use_teacher_forcing:
+                # Use ground truth labels
+                labels_binary = labels[task_name].float()  # [batch, 256]
+            else:
+                # Use predicted labels (autoregressive)
+                pred_probs = torch.sigmoid(preds.squeeze(-1))  # [batch, 256]
+                labels_binary = (pred_probs > 0.5).float()  # [batch, 256]
+
+            # Extract index of the positive node
+            positive_indices = labels_binary.argmax(dim=1)  # [batch]
+
+            # Extract the INITIAL embedding of the ground truth node (before transformer processing)
+            # This represents the raw features/identity of the GT node that task i+1 should condition on
+            # (e.g., if GT is node 221, we take the initial embedding: node_embeds[:, 221, :])
+            batch_indices = torch.arange(batch_size, device=device)
+            gt_token = node_embeds[batch_indices, positive_indices, :].unsqueeze(1)  # [batch, 1, d_model]
+
+            gt_tokens_list.append(gt_token)
+
+        return outputs
+
+
 class MultiTaskConfig:
     """Configuration for multi-task transformer models."""
 
@@ -810,8 +988,10 @@ def create_multitask_model(config: MultiTaskConfig) -> BaseMultiTaskTransformer:
         return ComputationVectorMultiTask(num_comp_vectors=num_comp_vectors, **model_kwargs)
     elif architecture == 'cached_comp':
         return CachedComputationVectorMultiTask(num_comp_vectors=num_comp_vectors, **model_kwargs)
+    elif architecture == 'teacher_forcing':
+        return TeacherForcingComputationVectorMultiTask(num_comp_vectors=num_comp_vectors, **model_kwargs)
     else:
         raise ValueError(
             f"Invalid architecture: {architecture}. "
-            f"Must be one of: 'basic', 'cached', 'comp', 'cached_comp'"
+            f"Must be one of: 'basic', 'cached', 'comp', 'cached_comp', 'teacher_forcing'"
         )

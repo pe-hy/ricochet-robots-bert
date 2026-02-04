@@ -107,11 +107,11 @@ def main(cfg: DictConfig):
     # Setup callbacks
     callbacks = []
 
-    # Model checkpoint - save best model based on average validation accuracy
+    # Model checkpoint - save best model based on exact match (all 4 tasks correct)
     checkpoint_callback = ModelCheckpoint(
         dirpath=cfg.checkpoint.dirpath,
-        filename=f"{cfg.model.architecture}-{{epoch:02d}}-{{val_avg_accuracy:.4f}}",
-        monitor='val_avg_accuracy',
+        filename=f"{cfg.model.architecture}-{{epoch:02d}}-{{val_exact_match_all_tasks:.4f}}",
+        monitor='val_exact_match_all_tasks',
         mode='max',
         save_top_k=cfg.checkpoint.save_top_k,
         save_last=True,
@@ -122,7 +122,7 @@ def main(cfg: DictConfig):
     # Early stopping
     if cfg.training.get('early_stopping', False):
         early_stop_callback = EarlyStopping(
-            monitor='val_avg_accuracy',
+            monitor='val_exact_match_all_tasks',
             patience=cfg.training.get('early_stopping_patience', 10),
             mode='max',
             verbose=True,
@@ -163,7 +163,7 @@ def main(cfg: DictConfig):
     # Print best checkpoint path
     print("=" * 80)
     print(f"Best checkpoint: {checkpoint_callback.best_model_path}")
-    print(f"Best val_avg_accuracy: {checkpoint_callback.best_model_score:.4f}")
+    print(f"Best val_exact_match_all_tasks: {checkpoint_callback.best_model_score:.4f}")
     print("=" * 80)
 
     # Save final model

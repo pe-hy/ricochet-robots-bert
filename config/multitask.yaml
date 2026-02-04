@@ -10,7 +10,7 @@ seed: 42
 # Weights & Biases configuration
 wandb:
   project: ricochet-robots-multitask
-  name: "${model.architecture}_d${model.d_model}_l${model.num_layers}_h${model.nhead}_lr${training.max_lr}"
+  name: "${model.architecture}_d${model.d_model}_l${model.num_layers}_h${model.nhead}_lr${training.max_lr}_big"
   save_dir: ./tmp/wandb_logs
   log_model: false
 
@@ -23,7 +23,7 @@ data:
 
   # Split configuration (absolute numbers)
   val_size: 256      # Number of examples for validation
-  test_size: 1024     # Number of examples for test (0 = no test set)
+  test_size: 0       # Number of examples for test (0 = no test set)
 
   # Positional encoding
   positional_encoding: onehot  # Options: onehot, sinusoidal, normalized, learned
@@ -36,24 +36,24 @@ data:
 # Model architecture
 model:
   # Architecture type
-  architecture: basic  # Options: basic, cached, comp, cached_comp
+  architecture: basic  # Options: basic, cached, comp, cached_comp, teacher_forcing
 
   # Transformer hyperparameters
-  d_model: 256
-  nhead: 8
-  num_layers: 16
+  d_model: 512
+  nhead: 16
+  num_layers: 12
   dim_feedforward: 1024
-  dropout: 0.1
+  dropout: 0.003
   activation: gelu
 
   # Computation vectors (only used for 'comp' and 'cached_comp' architectures)
-  num_comp_vectors: 3
+  num_comp_vectors: 4
 
 # Training configuration
 training:
   max_epochs: 100
-  max_lr: 0.005
-  weight_decay: 0.1
+  max_lr: 0.003
+  weight_decay: 0.002
   warmup_epochs: 20
   log_predictions: true
 
@@ -79,7 +79,7 @@ training:
 
 # Checkpoint configuration
 checkpoint:
-  dirpath: ./tmp/checkpoints_multitask/${model.architecture}_d${model.d_model}_l${model.num_layers}
+  dirpath: ./tmp/checkpoints_multitask/${model.architecture}_d${model.d_model}_l${model.num_layers}_${model.num_comp_vectors}
   save_top_k: 3
   save_final: true
 

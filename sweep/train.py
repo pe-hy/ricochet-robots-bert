@@ -28,8 +28,9 @@ def train():
     # Load base config
     base_config = OmegaConf.load('config/node_classifier.yaml')
 
-    # Load task config (Hydra defaults aren't processed by OmegaConf.load)
-    task_config = OmegaConf.load('config/task/helper_aggregate.yaml')
+    # Load task config from sweep parameter (Hydra defaults aren't processed by OmegaConf.load)
+    task_name = config.task_name
+    task_config = OmegaConf.load(f'config/task/{task_name}.yaml')
     base_config.task = task_config
 
     # Update with sweep params
