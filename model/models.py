@@ -245,7 +245,9 @@ class BaseMultiTaskTransformer(nn.Module, ABC):
     def forward(
         self,
         features: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None
+        attention_mask: Optional[torch.Tensor] = None,
+        labels: Optional[Dict[str, torch.Tensor]] = None,
+        use_teacher_forcing: bool = None
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass (to be implemented by subclasses).
@@ -253,6 +255,8 @@ class BaseMultiTaskTransformer(nn.Module, ABC):
         Args:
             features: [batch_size, num_nodes, feature_dim] - node features
             attention_mask: [batch_size, num_nodes] - padding mask (optional)
+            labels: Ground truth labels (used by teacher forcing architectures)
+            use_teacher_forcing: Whether to use teacher forcing (used by teacher forcing architectures)
 
         Returns:
             Dict with 4 task predictions, each [batch_size, num_nodes, 1]:
@@ -289,7 +293,7 @@ class BaseMultiTaskTransformer(nn.Module, ABC):
         logits_dict = self.forward(features, attention_mask)
         probs_dict = {}
         for task_name, logits in logits_dict.items():
-            probs_dict[task_name] = torch.sigmoid(logits).squeeze(-1)
+            probs_dict[task_name] = F.softmax(logits.squeeze(-1), dim=-1)
         return probs_dict
 
 
@@ -336,7 +340,9 @@ class BasicSequentialMultiTask(BaseMultiTaskTransformer):
     def forward(
         self,
         features: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None
+        attention_mask: Optional[torch.Tensor] = None,
+        labels: Optional[Dict[str, torch.Tensor]] = None,
+        use_teacher_forcing: bool = None
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass.
@@ -430,7 +436,9 @@ class CachedSequentialMultiTask(BaseMultiTaskTransformer):
     def forward(
         self,
         features: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None
+        attention_mask: Optional[torch.Tensor] = None,
+        labels: Optional[Dict[str, torch.Tensor]] = None,
+        use_teacher_forcing: bool = None
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass with cached node embeddings.
@@ -539,7 +547,9 @@ class ComputationVectorMultiTask(BaseMultiTaskTransformer):
     def forward(
         self,
         features: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None
+        attention_mask: Optional[torch.Tensor] = None,
+        labels: Optional[Dict[str, torch.Tensor]] = None,
+        use_teacher_forcing: bool = None
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass with computation vectors.
@@ -651,7 +661,9 @@ class CachedComputationVectorMultiTask(BaseMultiTaskTransformer):
     def forward(
         self,
         features: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None
+        attention_mask: Optional[torch.Tensor] = None,
+        labels: Optional[Dict[str, torch.Tensor]] = None,
+        use_teacher_forcing: bool = None
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass with cached node embeddings and computation vectors.
@@ -877,8 +889,11 @@ class TeacherForcingComputationVectorMultiTask(BaseMultiTaskTransformer):
                 labels_binary = labels[task_name].float()  # [batch, 256]
             else:
                 # Use predicted labels (autoregressive)
-                pred_probs = torch.sigmoid(preds.squeeze(-1))  # [batch, 256]
-                labels_binary = (pred_probs > 0.5).float()  # [batch, 256]
+                pred_probs = F.softmax(preds.squeeze(-1), dim=-1)  # [batch, 256]
+                # Convert to one-hot via argmax
+                predicted_indices = pred_probs.argmax(dim=-1)  # [batch]
+                labels_binary = torch.zeros_like(pred_probs)
+                labels_binary.scatter_(1, predicted_indices.unsqueeze(-1), 1.0)  # [batch, 256]
 
             # Extract index of the positive node
             positive_indices = labels_binary.argmax(dim=1)  # [batch]

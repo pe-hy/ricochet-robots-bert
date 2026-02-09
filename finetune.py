@@ -1,9 +1,12 @@
 """
-Training script for multi-task Ricochet Robots models.
+Finetuning script for multi-task Ricochet Robots models.
 
-Trains all 4 tasks jointly: subgoal_label, helper_aggregate, target_pos, chosen_helper
+Loads a pre-trained checkpoint and finetunes with teacher forcing.
+Logs all metrics to WandB as if training from scratch.
 
-Uses PyTorch Lightning, Hydra for configuration, and WandB for logging.
+Usage:
+    python finetune.py checkpoint_path=/path/to/checkpoint.ckpt
+    python finetune.py checkpoint_path=/path/to/checkpoint.ckpt training.max_lr=1e-4 training.max_epochs=20
 """
 
 import os
@@ -20,19 +23,34 @@ from model.multitask_lightning_module import MultiTaskLightningModule
 from utils.multitask_data_module import MultiTaskDataModule
 
 
-@hydra.main(version_base=None, config_path="config", config_name="multitask")
+@hydra.main(version_base=None, config_path="config", config_name="finetune")
 def main(cfg: DictConfig):
     """
-    Main training function.
+    Main finetuning function.
 
     Args:
         cfg: Hydra configuration
     """
     # Print config
     print("=" * 80)
-    print("Configuration:")
+    print("Finetuning Configuration:")
     print(OmegaConf.to_yaml(cfg))
     print("=" * 80)
+
+    # Resolve checkpoint path
+    checkpoint_path = Path(cfg.checkpoint_path)
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+    print(f"Loading checkpoint: {checkpoint_path}")
+
+    # Load checkpoint to extract model config
+    ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    model_config_dict = ckpt['hyper_parameters']['model_config']
+    model_config = MultiTaskConfig(**model_config_dict)
+
+    print(f"Loaded model config: architecture={model_config.architecture}, "
+          f"d_model={model_config.d_model}, num_layers={model_config.num_layers}")
 
     # Set random seed for reproducibility
     pl.seed_everything(cfg.seed, workers=True)
@@ -54,34 +72,31 @@ def main(cfg: DictConfig):
     feature_dim = data_module.feature_dim
     print(f"Feature dimension: {feature_dim}")
 
-    # Create model config
-    model_config = MultiTaskConfig(
-        feature_dim=feature_dim,
-        d_model=cfg.model.d_model,
-        nhead=cfg.model.nhead,
-        num_layers=cfg.model.num_layers,
-        dim_feedforward=cfg.model.dim_feedforward,
-        dropout=cfg.model.dropout,
-        activation=cfg.model.activation,
-        architecture=cfg.model.architecture,
-        num_comp_vectors=cfg.model.get('num_comp_vectors', 3),
-        positional_encoding=cfg.data.positional_encoding,
-        board_size=cfg.data.board_size,
-        pos_encoding_dim=cfg.data.get('pos_encoding_dim', 0),
-        pos_combine_method=cfg.data.get('pos_combine_method', 'concat'),
-    )
-
-    # Create model
+    # Create model from saved config
     model = create_multitask_model(model_config)
-    print(f"Created model: {cfg.model.architecture}")
-    print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+
+    # Load model weights from checkpoint
+    model_state_dict = {}
+    for key, value in ckpt['state_dict'].items():
+        # Lightning saves as "model.xxx", strip the prefix
+        if key.startswith('model.'):
+            model_state_dict[key[len('model.'):]] = value
+
+    missing, unexpected = model.load_state_dict(model_state_dict, strict=False)
+    if missing:
+        print(f"Warning: Missing keys in checkpoint: {missing}")
+    if unexpected:
+        print(f"Warning: Unexpected keys in checkpoint: {unexpected}")
+
+    param_count = sum(p.numel() for p in model.parameters())
+    print(f"Loaded model: {model_config.architecture} ({param_count:,} parameters)")
 
     # Calculate steps per epoch (account for gradient accumulation)
     train_size = len(data_module.train_dataset)
     accumulate = cfg.training.get('accumulate_grad_batches', 1)
     steps_per_epoch = train_size // (cfg.data.batch_size * accumulate)
 
-    # Create Lightning module
+    # Create Lightning module with finetuning training params
     lightning_module = MultiTaskLightningModule(
         model=model,
         model_config=model_config,
@@ -102,16 +117,19 @@ def main(cfg: DictConfig):
         log_model=cfg.wandb.get('log_model', False),
     )
 
-    # Log config to wandb
-    wandb_logger.experiment.config.update(OmegaConf.to_container(cfg, resolve=True))
+    # Log config to wandb (include checkpoint path for traceability)
+    wandb_config = OmegaConf.to_container(cfg, resolve=True)
+    wandb_config['finetuned_from'] = str(checkpoint_path)
+    wandb_config['model'] = model_config.to_dict()
+    wandb_logger.experiment.config.update(wandb_config)
 
     # Setup callbacks
     callbacks = []
 
-    # Model checkpoint - save best model based on exact match (all 4 tasks correct)
+    # Model checkpoint
     checkpoint_callback = ModelCheckpoint(
         dirpath=cfg.checkpoint.dirpath,
-        filename=f"{cfg.model.architecture}-{{epoch:02d}}-{{val_exact_match_all_tasks:.4f}}",
+        filename=f"{model_config.architecture}-finetune-{{epoch:02d}}-{{val_exact_match_all_tasks:.4f}}",
         monitor='val_exact_match_all_tasks',
         mode='max',
         save_top_k=cfg.checkpoint.save_top_k,
@@ -148,9 +166,13 @@ def main(cfg: DictConfig):
         log_every_n_steps=cfg.training.get('log_every_n_steps', 50),
     )
 
-    # Train
+    # Finetune
     print("=" * 80)
-    print("Starting training...")
+    print("Starting finetuning...")
+    print(f"  Checkpoint: {checkpoint_path}")
+    print(f"  Learning rate: {cfg.training.max_lr}")
+    print(f"  Epochs: {cfg.training.max_epochs}")
+    print(f"  Warmup epochs: {cfg.training.warmup_epochs}")
     print("=" * 80)
     trainer.fit(lightning_module, data_module)
 
@@ -169,7 +191,7 @@ def main(cfg: DictConfig):
 
     # Save final model
     if cfg.checkpoint.get('save_final', True):
-        final_path = Path(cfg.checkpoint.dirpath) / f"{cfg.model.architecture}_final.ckpt"
+        final_path = Path(cfg.checkpoint.dirpath) / f"{model_config.architecture}_finetune_final.ckpt"
         trainer.save_checkpoint(final_path)
         print(f"Saved final model to: {final_path}")
 

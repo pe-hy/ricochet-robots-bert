@@ -66,8 +66,8 @@ class MultiTaskLightningModule(pl.LightningModule):
             task_weights = {task_name: 1.0 for task_name in self.TASK_NAMES}
         self.task_weights = task_weights
 
-        # Loss function (per-task BCE with logits)
-        self.criterion = nn.BCEWithLogitsLoss()
+        # Loss function (per-task cross-entropy over nodes)
+        self.criterion = nn.CrossEntropyLoss()
 
         # Metrics for each task (train)
         self.train_metrics = nn.ModuleDict({
@@ -134,9 +134,12 @@ class MultiTaskLightningModule(pl.LightningModule):
 
         for task_name in self.TASK_NAMES:
             logits = logits_dict[task_name].squeeze(-1)  # [batch, num_nodes]
-            labels = labels_dict[task_name].float()       # [batch, num_nodes]
+            labels_onehot = labels_dict[task_name]        # [batch, num_nodes] one-hot
 
-            task_loss = self.criterion(logits, labels)
+            # CrossEntropyLoss needs class indices [batch], not one-hot [batch, num_nodes]
+            labels_indices = labels_onehot.argmax(dim=-1)  # [batch]
+
+            task_loss = self.criterion(logits, labels_indices)
             losses[task_name] = task_loss
 
             # Weighted sum
@@ -166,17 +169,21 @@ class MultiTaskLightningModule(pl.LightningModule):
             logits = logits_dict[task_name].squeeze(-1)  # [batch, num_nodes]
             labels = labels_dict[task_name]              # [batch, num_nodes]
 
-            # Get probabilities and predictions
-            probs = torch.sigmoid(logits)
-            preds = (probs > 0.5).long()
+            # Get probabilities via softmax over nodes
+            probs = F.softmax(logits, dim=-1)  # [batch, num_nodes]
 
-            # Compute exact match per example
-            exact_matches = (preds == labels).all(dim=1).float()
+            # Predictions: argmax -> one-hot
+            pred_indices = probs.argmax(dim=-1)  # [batch]
+            preds = torch.zeros_like(probs, dtype=torch.long)
+            preds.scatter_(1, pred_indices.unsqueeze(-1), 1)  # [batch, num_nodes] one-hot
+
+            # Compute exact match: does the predicted node match the true node?
+            exact_matches = (pred_indices == labels.argmax(dim=-1)).float()  # [batch]
 
             # Flatten for node-level metrics
             probs_flat = probs.flatten()
             preds_flat = preds.flatten()
-            labels_flat = labels.flatten()
+            labels_flat = labels.long().flatten()
 
             metrics[task_name] = {
                 'probs': probs_flat,
@@ -388,12 +395,14 @@ class MultiTaskLightningModule(pl.LightningModule):
         # Convert logits to probabilities
         probs_dict = {}
         for task_name, logits in logits_dict.items():
-            probs_dict[task_name] = torch.sigmoid(logits.squeeze(-1))
+            probs_dict[task_name] = F.softmax(logits.squeeze(-1), dim=-1)
 
         # Log first example in batch for each task
         for task_name in self.TASK_NAMES:
             example_labels = labels_dict[task_name][0].detach().to(torch.float32).cpu().numpy()
             example_probs = probs_dict[task_name][0].detach().to(torch.float32).cpu().numpy()
+
+            predicted_node = int(example_probs.argmax())
 
             # Create table
             columns = ['node_id', 'label', 'prediction', 'probability']
@@ -402,7 +411,7 @@ class MultiTaskLightningModule(pl.LightningModule):
                 data.append([
                     i,
                     int(example_labels[i]),
-                    int(example_probs[i] > 0.5),
+                    int(i == predicted_node),
                     float(example_probs[i])
                 ])
 

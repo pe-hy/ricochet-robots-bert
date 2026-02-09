@@ -1,0 +1,70 @@
+# @package _global_
+
+# Hydra configuration for finetuning a pre-trained multi-task model
+# Usage: python finetune.py checkpoint_path=/path/to/checkpoint.ckpt
+# Override: python finetune.py checkpoint_path=/path/to/ckpt training.max_lr=1e-4 training.max_epochs=20
+
+# Path to the checkpoint to finetune from (REQUIRED)
+checkpoint_path: /scratch/project_465002050/Petr/ricochet-robots-bert/tmp/checkpoints_multitask/teacher_forcing_d512_l8_4/teacher_forcing-epoch=15-val_exact_match_all_tasks=0.7793.ckpt
+
+# Random seed for reproducibility
+seed: 42
+
+# Weights & Biases configuration
+wandb:
+  project: ricochet-robots-multitask
+  name: "finetune_lr${training.max_lr}_ep${training.max_epochs}"
+  save_dir: ./tmp/wandb_logs
+  log_model: false
+
+# Data configuration
+data:
+  train_path: data/dataset_multiple_graphs.jsonl
+  board_size: 16
+  batch_size: 256
+  num_workers: 0
+
+  # Split configuration (absolute numbers)
+  val_size: 512
+  test_size: 0
+
+  # Positional encoding
+  positional_encoding: onehot
+  positional_encoding_kwargs: {}
+
+# Training configuration (finetuning defaults)
+training:
+  max_epochs: 15
+  max_lr: 1e-4
+  weight_decay: 0.01
+  warmup_epochs: 1
+  log_predictions: true
+
+  # Early stopping
+  early_stopping: true
+  early_stopping_patience: 5
+
+  # Trainer settings
+  accelerator: auto
+  devices: auto
+  precision: bf16-mixed
+  log_every_n_steps: 50
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+
+# Checkpoint configuration
+checkpoint:
+  dirpath: ./tmp/checkpoints_finetune
+  save_top_k: 3
+  save_final: true
+
+# Deterministic mode
+deterministic: true
+
+# Hydra configuration
+hydra:
+  run:
+    dir: ./tmp/hydra_finetune
+  sweep:
+    dir: ./tmp/hydra_finetune/sweep/
+    subdir: "sub"

@@ -22,7 +22,7 @@ data:
   num_workers: 0  # Single-threaded with linecache - loads 8.9GB once, then fast lookups
 
   # Split configuration (absolute numbers)
-  val_size: 256      # Number of examples for validation
+  val_size: 512      # Number of examples for validation
   test_size: 0       # Number of examples for test (0 = no test set)
 
   # Positional encoding
@@ -41,8 +41,8 @@ model:
   # Transformer hyperparameters
   d_model: 512
   nhead: 16
-  num_layers: 12
-  dim_feedforward: 1024
+  num_layers: 8
+  dim_feedforward: 2048
   dropout: 0.003
   activation: gelu
 
